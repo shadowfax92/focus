@@ -10,6 +10,7 @@ type DayStats struct {
 	Distractions   int     `json:"distractions"`
 	Pulses         int     `json:"pulses"`
 	Checkins       int     `json:"checkins"`
+	Escalations    int     `json:"escalations"`
 	Acks           int     `json:"acks"`
 	AvgAckLatencyS float64 `json:"avg_ack_latency_s"`
 	latencyTotal   float64
@@ -72,6 +73,7 @@ func DeriveDays(events []Event, end time.Time, days int, loc *time.Location) []D
 				day.latencyCount++
 			}
 		case "escalation":
+			day.Escalations++
 			day.Distractions++
 		}
 	}

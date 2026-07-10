@@ -285,3 +285,80 @@ func TestFullscreenIdleReturnFiresWelcomeBackCheckin(t *testing.T) {
 		t.Fatal("welcome-back check-in not showing")
 	}
 }
+
+func TestIdleReturnLeavesPendingCheckinAlone(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	d.state.FocusText = "stay focused"
+	d.state.SetAt = now.Add(-time.Hour)
+	d.machine.Checkin(now.Add(-time.Minute))
+	reminderAt := d.machine.State().ReminderAt
+
+	idle := 10 * time.Minute
+	d.idle = func() float64 { return idle.Seconds() }
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	idle = 0
+	now = now.Add(time.Second)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The screen from before the idle stretch is still up: no duplicate
+	// checkin event, no restamped latency.
+	wantEventTypes(t, d, []string{"idle_return"})
+	state := d.machine.State()
+	if !state.InTakeover || state.ReminderAt != reminderAt {
+		t.Fatalf("pending check-in was disturbed: %+v", state)
+	}
+}
+
+func TestSetClearsStaleIdleGuard(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	d.idleGuarded = true
+
+	if response := d.Handle(ipc.Request{Action: "set", Text: "fresh start"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	now = now.Add(time.Second)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	wantEventTypes(t, d, []string{"set"})
+	if d.machine.State().InTakeover {
+		t.Fatal("stale idle guard grabbed the screen right after set")
+	}
+}
+
+func TestPollClearsIdleGuardWithoutFocus(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	d.idleGuarded = true
+
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	if d.idleGuarded {
+		t.Fatal("idle guard survived a focus-less poll")
+	}
+}
+
+func TestDoneAckWhilePausedClearsPause(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+
+	if response := d.Handle(ipc.Request{Action: "set", Text: "ship it"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	if response := d.Handle(ipc.Request{Action: "pause", Duration: "30m"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	if response := d.Handle(ipc.Request{Action: "ack", Kind: "done"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	if d.state.PausedUntil != nil {
+		t.Fatalf("done ack left a dangling pause: %v", d.state.PausedUntil)
+	}
+}

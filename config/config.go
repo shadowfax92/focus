@@ -54,7 +54,7 @@ func Default() Config {
 		PulseSeconds:         8,
 		EscalateAfter:        2,
 		BreathingGateSeconds: 3,
-		IdleOpacity:          0,
+		IdleOpacity:          0.30,
 		IdlePauseMinutes:     5,
 		Position:             Position{Preset: "top-center"},
 		Quotes:               []string{defaultQuote},

@@ -22,8 +22,8 @@ func TestLoadFromMergesDefaultsAndParsesDuration(t *testing.T) {
 	if cfg.EscalateAfter != 2 || cfg.Position.Preset != "top-center" {
 		t.Fatalf("defaults were not preserved: %+v", cfg)
 	}
-	if cfg.ReminderStyle != StyleFullscreen || cfg.IdleOpacity != 0 {
-		t.Fatalf("v2 defaults not applied: %+v", cfg)
+	if cfg.ReminderStyle != StyleFullscreen {
+		t.Fatalf("v2 default style not applied: %+v", cfg)
 	}
 }
 

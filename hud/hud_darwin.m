@@ -434,18 +434,20 @@ static void pillAck(int kind) {
     if (commandSelector == @selector(insertNewline:)) {
         NSString *txt = [_tkField.stringValue stringByTrimmingCharactersInSet:
                             [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        // Empty ⏎ is swallowed: ending with nothing next is the deliberate ⎋.
-        if (txt.length > 0) {
+        if (doneMode) {
+            // ⏎ commits the completion; an empty field means nothing next.
             endRetype();
-            takeoverAck(doneMode ? kAckDone : kAckRefocus, txt);
+            takeoverAck(kAckDone, txt.length ? txt : nil);
+        } else if (txt.length > 0) {
+            endRetype();
+            takeoverAck(kAckRefocus, txt);
         }
         return YES;
     }
     if (commandSelector == @selector(cancelOperation:)) {
-        // ⎋ backs out of the retype field — never out of the takeover. In done
-        // mode the completion already happened: ⎋ means "done, nothing next".
+        // ⎋ only backs out of the retype field — never out of the takeover,
+        // and never completes anything: a mis-keyed F must be undoable.
         endRetype();
-        if (doneMode) takeoverAck(kAckDone, nil);
         return YES;
     }
     return NO;
@@ -499,7 +501,7 @@ static NSAttributedString *editHintString(void) {
 }
 
 static NSAttributedString *doneHintString(void) {
-    return hintsWithPairs(@[ @[@"⏎", @"start next focus"], @[@"⎋", @"just done"] ]);
+    return hintsWithPairs(@[ @[@"⏎", @"done — next focus optional"], @[@"⎋", @"back"] ]);
 }
 
 static void buildTakeover(void) {
@@ -696,6 +698,11 @@ static void showTakeoverMain(NSString *focus, NSString *quote, NSString *mirror,
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
         ctx.duration = 2.0;
         _tk.animator.alphaValue = 1.0;
+    } completionHandler:^{
+        // Gateless screens (routine check-ins) arm only once fully faded in:
+        // keys armed on a near-invisible panel would let in-flight typing ack
+        // a screen the user never saw.
+        if (!useGate && _tkGen == gen && _tkVisible) armTakeover();
     }];
 
     if (useGate) {
@@ -704,8 +711,6 @@ static void showTakeoverMain(NSString *focus, NSString *quote, NSString *mirror,
                        dispatch_get_main_queue(), ^{
             if (_tkGen == gen && _tkVisible) armTakeover();
         });
-    } else {
-        armTakeover();
     }
 }
 

@@ -20,7 +20,7 @@ func TestDeriveDaysDistractionAndLatency(t *testing.T) {
 		{TS: now.AddDate(0, 0, -1), Type: "ack", Kind: "drifted"},
 	}
 	got := DeriveToday(events, now, loc)
-	if got.Today.Distractions != 2 || got.Today.Pulses != 1 || got.Today.Acks != 2 {
+	if got.Today.Distractions != 2 || got.Today.Pulses != 1 || got.Today.Acks != 2 || got.Today.Escalations != 1 {
 		t.Fatalf("unexpected today stats: %+v", got.Today)
 	}
 	if got.Today.AvgAckLatencyS != 4 {

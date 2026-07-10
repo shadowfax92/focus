@@ -54,6 +54,15 @@ func main() {
 	exitAfter := flag.Duration("exit-after", 0, "quit after this long (0 = run until ^C)")
 	flag.Parse()
 
+	// -mirror's default reads like an escalation; give -checkin a fitting
+	// default while still honoring an explicit -mirror.
+	checkinMirror := "3rd check-in today · 43m on task · yesterday: 2 distractions"
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "mirror" {
+			checkinMirror = *mirror
+		}
+	})
+
 	ev := hud.Events{
 		OnAck: func(kind hud.AckKind, rung int, latency time.Duration, newText string) {
 			fmt.Printf("[demo] OnAck kind=%s rung=%d latency=%.2fs newText=%q\n",
@@ -95,7 +104,7 @@ func main() {
 			hud.ShowTakeover(hud.TakeoverContent{
 				FocusText:  *text,
 				Quote:      *quote,
-				MirrorLine: "3rd check-in today · 43m on task · yesterday: 2 distractions",
+				MirrorLine: checkinMirror,
 			})
 		}
 		if *pause > 0 {

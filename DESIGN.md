@@ -14,11 +14,13 @@ This tool is a persistent, stateful HUD with its own daemon, socket, and app bun
   between reminders. Every `interval` (15m/30m — user's call) the full-screen
   check-in appears directly: no pulse rungs, no `escalate_after` gating — the
   screen IS the reminder. While one is up, further ticks are absorbed (never a
-  second screen, never rung growth). Routine check-ins arm their keys
-  immediately (`Gate: 0`): a breathing gate 4×/hour would be pure friction —
-  `breathing_gate_seconds` applies to pulse-mode escalations only. Setting a
-  focus does **not** fire an instant screen; the first check-in comes a full
-  interval later.
+  second screen, never rung growth — an idle stretch spent staring at one
+  doesn't re-fire it either). Routine check-ins skip the breathing circle
+  (`Gate: 0`): a gate 4×/hour would be pure friction — `breathing_gate_seconds`
+  applies to pulse-mode escalations only. The keys still arm only once the 2s
+  fade-in completes, so in-flight typing can never ack a screen that isn't
+  visible yet. Setting a focus does **not** fire an instant screen; the first
+  check-in comes a full interval later.
 - **`pulse`.** The v1 model, unchanged: ambient pill at `idle_opacity`, glow
   pulses climbing rungs each unacked tick, takeover after `escalate_after`
   ignored pulses.
@@ -86,10 +88,10 @@ takeover screen itself.
   - `F` → done. The same inline field opens empty ("what's next?"):
     - `Enter` with text → done ack carrying the next focus — the daemon logs
       completion and starts the new focus in one stroke
-    - `⎋` → done ack with nothing next: focus cleared, screen closes, no
-      reminders until the next `focus set`
-    - `Enter` on the empty field is swallowed (ending with nothing next is
-      the deliberate ⎋, not a reflex double-Enter)
+    - `Enter` on the empty field → done with nothing next: focus cleared,
+      screen closes, no reminders until the next `focus set`
+    - `⎋` → backs out to the armed keys, completing nothing (a mis-keyed F
+      must be undoable; ⎋ is never destructive)
 - No mouse required; `⎋` never dismisses the screen itself. On ack: fade out,
   restore whatever was key before.
 - The daemon passes the rung explicitly (`TakeoverContent.Rung`): 0 for
@@ -149,8 +151,8 @@ reminder_style: fullscreen   # fullscreen | pulse
 interval: 15m
 pulse_seconds: 8             # pulse style only
 escalate_after: 2            # pulse style only
-breathing_gate_seconds: 3    # pulse-style escalations; check-ins always gate 0
-idle_opacity: 0              # pulse style only (fullscreen never shows the pill)
+breathing_gate_seconds: 3    # pulse-style escalations; check-ins arm on fade-in
+idle_opacity: 0.30           # pulse style only (fullscreen never shows the pill; 0 is honored)
 idle_pause_minutes: 5
 position:                    # pulse style only
   preset: top-center   # top-center | top-right | top-left | custom

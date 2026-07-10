@@ -161,6 +161,9 @@ func (d *Daemon) poll() error {
 		}
 	}
 	if d.state.FocusText == "" {
+		// A guard left armed here would greet the next `focus set` with an
+		// instant bogus welcome-back reminder.
+		d.idleGuarded = false
 		return nil
 	}
 	if d.cfg.IdlePauseMinutes > 0 {
@@ -171,12 +174,17 @@ func (d *Daemon) poll() error {
 		}
 		if d.idleGuarded {
 			d.idleGuarded = false
-			d.machine.Reset()
-			action := d.reminderLocked(now)
-			d.nextTick = now.Add(d.cfg.Interval)
 			if err := d.appendLocked(store.Event{TS: now, Type: "idle_return"}); err != nil {
 				return err
 			}
+			// A reminder is already up from before the idle stretch — leave
+			// it; resetting would double-count and restamp its latency.
+			if d.machine.State().InTakeover {
+				return d.saveLocked()
+			}
+			d.machine.Reset()
+			action := d.reminderLocked(now)
+			d.nextTick = now.Add(d.cfg.Interval)
 			return d.performLocked(action, now)
 		}
 	}
@@ -240,6 +248,7 @@ func (d *Daemon) set(text string) error {
 	d.state.FocusText = text
 	d.state.SetAt = now
 	d.machine.Reset()
+	d.idleGuarded = false
 	d.nextTick = now.Add(d.cfg.Interval)
 	if err := d.appendLocked(store.Event{TS: now, Type: "set", Text: text}); err != nil {
 		return err
@@ -264,10 +273,17 @@ func (d *Daemon) set(text string) error {
 func (d *Daemon) done() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	now := d.now()
-	if err := d.appendLocked(store.Event{TS: now, Type: "done"}); err != nil {
+	if err := d.appendLocked(store.Event{TS: d.now(), Type: "done"}); err != nil {
 		return err
 	}
+	return d.clearFocusLocked()
+}
+
+// clearFocusLocked ends the current focus everywhere — state, pause, machine,
+// pixels. Nothing fires again until the next set. Both completion paths
+// (`focus done` and a done ack with nothing next) go through here so their
+// semantics cannot drift.
+func (d *Daemon) clearFocusLocked() error {
 	d.state.FocusText = ""
 	d.state.SetAt = time.Time{}
 	d.state.PausedUntil = nil
@@ -369,10 +385,7 @@ func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung 
 			return err
 		}
 		if newText == "" {
-			d.state.FocusText = ""
-			d.state.SetAt = time.Time{}
-			hud.ClearFocus()
-			return d.saveLocked()
+			return d.clearFocusLocked()
 		}
 	}
 	if newText != "" && (kind == "refocus" || kind == "done") {
@@ -450,19 +463,14 @@ func (d *Daemon) takeoverContentLocked(now time.Time) hud.TakeoverContent {
 		Quote:     quote,
 	}
 	if d.fullscreen() {
+		// max guards re-shows whose checkin event landed before midnight —
+		// "0th check-in today" is worse than an off-by-one at 12:01am.
 		content.MirrorLine = fmt.Sprintf("%s check-in today · %dm on task · yesterday: %d distractions",
-			ordinal(today.Today.Checkins), minutes, today.Yesterday.Distractions)
+			ordinal(max(today.Today.Checkins, 1)), minutes, today.Yesterday.Distractions)
 		return content
 	}
-	escalations := 0
-	date := now.In(time.Local).Format("2006-01-02")
-	for _, event := range events {
-		if event.Type == "escalation" && event.TS.In(time.Local).Format("2006-01-02") == date {
-			escalations++
-		}
-	}
 	content.MirrorLine = fmt.Sprintf("%s escalation today · yesterday: %d · %dm on task",
-		ordinal(escalations), today.Yesterday.Distractions, minutes)
+		ordinal(max(today.Today.Escalations, 1)), today.Yesterday.Distractions, minutes)
 	content.Rung = d.machine.State().Rung
 	content.Gate = time.Duration(d.cfg.BreathingGateSeconds) * time.Second
 	return content

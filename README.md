@@ -73,7 +73,7 @@ Every `interval` the screen blurs over and shows your focus, a quote, and four k
 | `⏎` | Still on it |
 | `D` | Drifted — this is what counts as a distraction |
 | `N` | Change the focus (edit it inline) |
-| `F` | Done — logs completion, then type the next focus right there (`⏎` starts it, `⎋` means nothing next: the screen closes and stays quiet until the next `focus set`) |
+| `F` | Done — logs completion, then type the next focus right there (`⏎` starts it; `⏎` on an empty field means nothing next and the screen stays quiet until the next `focus set`; `⎋` backs out) |
 
 While a check-in is up, further intervals are absorbed — there is never a second screen stacked on the first. Routine check-ins are *not* distractions; only `D` moves the metric. Fewer is better, so negative changes render green.
 
@@ -95,8 +95,8 @@ quotes:
 # pulse style only:
 pulse_seconds: 8
 escalate_after: 2
-breathing_gate_seconds: 3    # escalation takeovers; routine check-ins arm instantly
-idle_opacity: 0
+breathing_gate_seconds: 3    # escalation takeovers; check-ins arm when faded in
+idle_opacity: 0.3
 position:
   preset: top-center
   x: 0
