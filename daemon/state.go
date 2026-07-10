@@ -13,7 +13,7 @@ import (
 
 type State struct {
 	FocusText   string          `json:"focus_text,omitempty"`
-	SetAt       time.Time       `json:"set_at,omitempty"`
+	SetAt       time.Time       `json:"set_at,omitempty,omitzero"`
 	PausedUntil *time.Time      `json:"paused_until,omitempty"`
 	Position    config.Position `json:"position"`
 	Machine     MachineState    `json:"machine"`

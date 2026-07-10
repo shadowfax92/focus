@@ -20,7 +20,7 @@ type MachineState struct {
 	UnackedPulses int       `json:"unacked_pulses"`
 	AwaitingAck   bool      `json:"awaiting_ack"`
 	InTakeover    bool      `json:"in_takeover"`
-	ReminderAt    time.Time `json:"reminder_at,omitempty"`
+	ReminderAt    time.Time `json:"reminder_at,omitempty,omitzero"`
 }
 
 type Machine struct {

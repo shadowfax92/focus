@@ -33,7 +33,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	if state.Position.Preset == "" {
+	if state.Position.Preset != "custom" {
 		state.Position = cfg.Position
 	}
 	d := &Daemon{
