@@ -2,3 +2,4 @@ focus
 *.app
 dist/
 .DS_Store
+.grove/
