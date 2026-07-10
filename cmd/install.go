@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -215,14 +216,25 @@ func installCLISymlink() error {
 
 func bootstrap() error {
 	domain := "gui/" + strconv.Itoa(os.Getuid())
-	if output, err := exec.Command("launchctl", "bootstrap", domain, plistPath()).CombinedOutput(); err == nil {
-		return nil
-	} else {
-		if fallback, fallbackErr := exec.Command("launchctl", "load", plistPath()).CombinedOutput(); fallbackErr != nil {
-			return fmt.Errorf("launchctl bootstrap failed: %w: %s; fallback load: %v: %s", err, output, fallbackErr, fallback)
+	var lastErr error
+	var lastOut []byte
+	// bootout is asynchronous: a bootstrap issued while the old job is still
+	// draining fails transiently, so retry briefly before falling back.
+	for attempt := 0; attempt < 5; attempt++ {
+		out, err := exec.Command("launchctl", "bootstrap", domain, plistPath()).CombinedOutput()
+		if err == nil {
+			return nil
 		}
+		lastErr, lastOut = err, out
+		time.Sleep(300 * time.Millisecond)
 	}
-	return nil
+	// Deprecated `load` can exit 0 without loading anything; trust only a
+	// service that launchctl can actually see afterwards.
+	_ = exec.Command("launchctl", "load", plistPath()).Run()
+	if exec.Command("launchctl", "print", domain+"/"+plistLabel).Run() == nil {
+		return nil
+	}
+	return fmt.Errorf("launchctl bootstrap failed: %w: %s", lastErr, lastOut)
 }
 
 func bootout() error {
