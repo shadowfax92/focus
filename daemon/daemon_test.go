@@ -98,3 +98,28 @@ func TestIdleGuardSkipsTicksAndPulsesOnReturn(t *testing.T) {
 		t.Fatalf("welcome-back pulse state = %+v", state)
 	}
 }
+
+func TestResumePreservesTakeoverState(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now)
+	d.state.FocusText = "finish the task"
+	d.state.SetAt = now.Add(-time.Hour)
+	d.machine.Start(now.Add(-2 * time.Minute))
+	d.machine.Tick(now.Add(-time.Minute), 1)
+	until := now.Add(time.Minute)
+	d.state.PausedUntil = &until
+
+	if err := d.resume(); err != nil {
+		t.Fatal(err)
+	}
+	if d.state.PausedUntil != nil || !d.machine.State().InTakeover {
+		t.Fatalf("resume lost takeover state: %+v", d.state)
+	}
+	events, err := d.events.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != "resume" {
+		t.Fatalf("resume events = %+v", events)
+	}
+}

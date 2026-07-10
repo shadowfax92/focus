@@ -269,6 +269,9 @@ func (d *Daemon) resume() error {
 }
 
 func (d *Daemon) resumeLocked(now time.Time) error {
+	if d.state.PausedUntil == nil {
+		return nil
+	}
 	d.state.PausedUntil = nil
 	d.nextTick = now.Add(d.cfg.Interval)
 	if err := d.appendLocked(store.Event{TS: now, Type: "resume"}); err != nil {
@@ -277,6 +280,9 @@ func (d *Daemon) resumeLocked(now time.Time) error {
 	hud.SetPaused(false)
 	if d.state.FocusText != "" {
 		hud.SetFocus(d.state.FocusText, d.state.SetAt)
+		if d.machine.State().InTakeover {
+			hud.ShowTakeover(d.takeoverContentLocked(now))
+		}
 	}
 	return d.saveLocked()
 }
