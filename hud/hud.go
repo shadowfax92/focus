@@ -3,15 +3,12 @@
 // compiles against it, the UI lane implements it. Signature changes need
 // orchestrator sign-off (see DESIGN.md).
 //
-// This file currently ships headless no-op stubs that log "[hud stub]" lines
-// so the daemon can be exercised end-to-end before the real UI lands.
+// The real implementation is cgo Objective-C (hud_darwin.go + hud_darwin.m);
+// non-darwin or cgo-disabled builds fall back to the headless stubs in
+// hud_stub.go that log "[hud stub]" lines.
 package hud
 
-import (
-	"fmt"
-	"os"
-	"time"
-)
+import "time"
 
 type AckKind int
 
@@ -66,40 +63,35 @@ type Events struct {
 // main goroutine (main.go locks it to the OS thread) after daemon policy
 // goroutines are started.
 func Run(cfg Config, ev Events) {
-	stub("run cfg=%+v", cfg)
-	select {}
+	runImpl(cfg, ev)
 }
 
 // SetFocus shows the pill with the given text; since drives the elapsed label.
 func SetFocus(text string, since time.Time) {
-	stub("set_focus %q since=%s", text, since.Format(time.RFC3339))
+	setFocusImpl(text, since)
 }
 
 // ClearFocus hides the pill.
 func ClearFocus() {
-	stub("clear_focus")
+	clearFocusImpl()
 }
 
 // Pulse plays the attention animation for the given escalation rung (0-based).
 func Pulse(rung int) {
-	stub("pulse rung=%d", rung)
+	pulseImpl(rung)
 }
 
 // ShowTakeover presents the full-screen ack takeover.
 func ShowTakeover(c TakeoverContent) {
-	stub("takeover focus=%q quote=%q mirror=%q gate=%s", c.FocusText, c.Quote, c.MirrorLine, c.Gate)
+	showTakeoverImpl(c)
 }
 
 // DismissTakeover removes the takeover without an ack (e.g. CLI ack arrived).
 func DismissTakeover() {
-	stub("dismiss_takeover")
+	dismissTakeoverImpl()
 }
 
 // SetPaused hides the pill while paused; the daemon also stops ticking.
 func SetPaused(paused bool) {
-	stub("set_paused %v", paused)
-}
-
-func stub(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "[hud stub] "+format+"\n", args...)
+	setPausedImpl(paused)
 }
