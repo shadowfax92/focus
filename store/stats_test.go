@@ -1,6 +1,9 @@
 package store
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,5 +47,21 @@ func TestDeriveWeeksAndImprovingStreak(t *testing.T) {
 	}
 	if weeks.ImprovingRun != 2 {
 		t.Fatalf("improving streak = %d, want 2", weeks.ImprovingRun)
+	}
+}
+
+func TestAppendNormalizesTimestampToUTC(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	events := New(path)
+	when := time.Date(2026, 7, 10, 8, 0, 0, 0, time.FixedZone("PDT", -7*60*60))
+	if err := events.Append(Event{TS: when, Type: "set", Text: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"ts":"2026-07-10T15:00:00Z"`) {
+		t.Fatalf("timestamp was not normalized to UTC: %s", b)
 	}
 }

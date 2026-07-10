@@ -45,6 +45,7 @@ func (s *Store) Append(event Event) error {
 	if event.TS.IsZero() {
 		event.TS = time.Now()
 	}
+	event.TS = event.TS.UTC()
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("create event directory: %w", err)
 	}
