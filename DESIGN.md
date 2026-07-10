@@ -1,14 +1,34 @@
 # focus — design
 
-One floating glow pill that shows your current priority, an escalation ladder of
-reminders that survives habituation, and honest day-over-day distraction stats.
+Nothing on screen between reminders; every `interval` a full-screen check-in
+asks whether you're still on the main thing — and honest day-over-day
+distraction stats. The v1 ambient pill + escalation ladder survives as an
+opt-in style.
 
 Deliberately **separate from mac-notify** (that stays a pure notification queue).
 This tool is a persistent, stateful HUD with its own daemon, socket, and app bundle.
 
+## Reminder styles — `reminder_style`
+
+- **`fullscreen` (default).** The pill is never shown; nothing is visible
+  between reminders. Every `interval` (15m/30m — user's call) the full-screen
+  check-in appears directly: no pulse rungs, no `escalate_after` gating — the
+  screen IS the reminder. While one is up, further ticks are absorbed (never a
+  second screen, never rung growth). Routine check-ins arm their keys
+  immediately (`Gate: 0`): a breathing gate 4×/hour would be pure friction —
+  `breathing_gate_seconds` applies to pulse-mode escalations only. Setting a
+  focus does **not** fire an instant screen; the first check-in comes a full
+  interval later.
+- **`pulse`.** The v1 model, unchanged: ambient pill at `idle_opacity`, glow
+  pulses climbing rungs each unacked tick, takeover after `escalate_after`
+  ignored pulses.
+
+Both styles share the idle guard, pause/resume, the ack vocabulary, and the
+takeover screen itself.
+
 ## UX spec
 
-### Pill (ambient state)
+### Pill (pulse style only)
 
 - Dark rounded floating panel. Visual language lifted from
   `/Users/shadowfax/code/clis/mac-notify/menubar/notify_darwin.m`
@@ -27,7 +47,7 @@ This tool is a persistent, stateful HUD with its own daemon, socket, and app bun
   `top-right`, `top-left`.
 - Hidden entirely when paused or when no focus is set.
 
-### Pulse ladder
+### Pulse ladder (pulse style only)
 
 - Every `interval` (default 15m) the daemon fires a pulse at the current rung:
   - rung 0: breathe to full opacity + glow for `pulse_seconds` (default 8s)
@@ -39,28 +59,41 @@ This tool is a persistent, stateful HUD with its own daemon, socket, and app bun
   reminder is the **takeover** instead of a pulse.
 - Acking on the pill while it is interactive: **left-click = on_task**,
   **⌥-click = drifted**.
-- Idle guard: if the user has been idle longer than `idle_pause_minutes`
-  (default 5), ticks are skipped entirely — no rung growth, no takeover at an
-  empty desk. On return from an idle stretch ≥ `idle_pause_minutes`, fire an
-  immediate welcome-back pulse (rung 0) and log `idle_return`.
+- Idle guard (both styles): if the user has been idle longer than
+  `idle_pause_minutes` (default 5), ticks are skipped entirely — no rung
+  growth, no screens at an empty desk. On return from an idle stretch ≥
+  `idle_pause_minutes`, fire an immediate welcome-back reminder (rung-0 pulse
+  in pulse style, a check-in in fullscreen style) and log `idle_return`.
 - `pause` hides the pill and stops ticks until `resume` (or the duration lapses).
 
-### Takeover (top of the ladder)
+### Takeover (the check-in screen; top of the ladder in pulse style)
 
 - Full-screen panel on the main screen. `NSVisualEffectView` blur — the work
   visibly dissolves behind it — fading in over ~2s.
 - Centered column: glowing focus text (large), a random quote from config
-  below it, and a dim mirror footer, e.g.
-  `2nd escalation today · yesterday: 5 · 43m on task`
-  (both strings are computed by the daemon and passed in).
+  below it, and a dim mirror footer computed by the daemon:
+  `3rd check-in today · 43m on task · yesterday: 2 distractions` (fullscreen)
+  or `2nd escalation today · yesterday: 5 · 43m on task` (pulse escalation).
 - Breathing gate: a breathing-circle animation for `breathing_gate_seconds`
-  (default 3, 0 = off) before the ack keys arm. Key hints appear after the gate.
+  (default 3, 0 = off) before the ack keys arm. Key hints appear after the
+  gate. Routine check-ins always pass gate 0 — keys arm immediately.
 - Keyboard-first; the panel becomes key and **swallows all keystrokes**:
-  - `Enter` → on_task
+  - `Enter` → on_task ("still on it")
   - `D` → drifted
-  - `N` → inline text field to retype/replace the focus → refocus ack (the new
-    text rides along; the daemon sets it as the current focus)
-- No Esc, no mouse required. On ack: fade out, restore whatever was key before.
+  - `N` → inline text field pre-filled with the current focus → refocus ack
+    (the new text rides along; the daemon sets it as the current focus);
+    `⎋` backs out to the armed keys
+  - `F` → done. The same inline field opens empty ("what's next?"):
+    - `Enter` with text → done ack carrying the next focus — the daemon logs
+      completion and starts the new focus in one stroke
+    - `⎋` → done ack with nothing next: focus cleared, screen closes, no
+      reminders until the next `focus set`
+    - `Enter` on the empty field is swallowed (ending with nothing next is
+      the deliberate ⎋, not a reflex double-Enter)
+- No mouse required; `⎋` never dismisses the screen itself. On ack: fade out,
+  restore whatever was key before.
+- The daemon passes the rung explicitly (`TakeoverContent.Rung`): 0 for
+  check-ins, the escalated rung in pulse style. Acks echo it back.
 - Never shown while the idle guard is active.
 
 ## Acks and stats
@@ -68,19 +101,23 @@ This tool is a persistent, stateful HUD with its own daemon, socket, and app bun
 Event log: append-only JSONL at `~/.local/share/focus/events.jsonl`:
 
 ```json
-{"ts":"2026-07-09T14:05:00Z","type":"pulse","rung":1}
-{"ts":"...","type":"ack","kind":"drifted","rung":1,"latency_s":4.2}
+{"ts":"2026-07-09T14:05:00Z","type":"checkin"}
+{"ts":"...","type":"ack","kind":"drifted","rung":0,"latency_s":4.2}
 {"ts":"...","type":"set","text":"ship onboarding PR"}
 ```
 
-`type`: `set | pulse | ack | escalation | done | pause | resume | idle_return`
-`kind` (acks): `on_task | drifted | refocus`
+`type`: `set | checkin | pulse | ack | escalation | done | pause | resume | idle_return`
+`kind` (acks): `on_task | drifted | refocus | done`
 
 **Distraction (the metric) = a `drifted` ack OR an `escalation` shown.**
+Routine `checkin` events are reminders, not distractions — in fullscreen mode
+the metric is drifted acks only, so every-15m screens never inflate the count.
+A done ack from the screen logs `ack` (kind `done`, with latency stamped from
+when the screen appeared) → `done` → `set` when a next focus was typed.
 Everything is derived at read time from the JSONL; no aggregate state.
 
-- `focus stats` — today vs yesterday: distractions, pulses, acks, avg ack
-  latency, DoD %. **Down is good**: fewer distractions renders green.
+- `focus stats` — today vs yesterday: distractions, check-ins, pulses, acks,
+  avg ack latency, DoD %. **Down is good**: fewer distractions renders green.
 - `focus stats --days N` — vertical bar chart of distractions/day, exactly the
   gh-stats look (`/Users/shadowfax/code/clis/gh-stats/render/render.go` —
   `VerticalBars`, `Sparkline`, `FormatPctInt`, fatih/color).
@@ -108,13 +145,14 @@ focus daemon                         # run daemon in foreground (dev)
 ## Config — `~/.config/focus/config.yaml` (defaults shown)
 
 ```yaml
+reminder_style: fullscreen   # fullscreen | pulse
 interval: 15m
-pulse_seconds: 8
-escalate_after: 2
-breathing_gate_seconds: 3
-idle_opacity: 0.30
+pulse_seconds: 8             # pulse style only
+escalate_after: 2            # pulse style only
+breathing_gate_seconds: 3    # pulse-style escalations; check-ins always gate 0
+idle_opacity: 0              # pulse style only (fullscreen never shows the pill)
 idle_pause_minutes: 5
-position:
+position:                    # pulse style only
   preset: top-center   # top-center | top-right | top-left | custom
   x: 0                 # used when preset: custom (saved on drag)
   y: 0
@@ -132,35 +170,36 @@ Unix socket `~/.focus.sock`, JSON request/response, one connection per command
 `set, done, status, pause, resume, ack, ping`. The CLI prints a helpful error
 (`focus install` / `focus daemon`) when the daemon is down.
 
-## Architecture and lane ownership
+## Architecture
 
 **Policy in Go, pixels in Objective-C.** The daemon decides *when* anything
-happens; `hud` only draws and reports input.
+happens; `hud` only draws and reports input. (The v1 two-lane parallel build
+and its frozen `hud/hud.go` contract are history — the API changes with the
+code now.)
 
 ```
 main.go            tiny; init() locks the main OS thread (Cocoa needs it)
-cmd/               cobra CLI                              — LANE A
-ipc/               socket client/server/protocol          — LANE A
-config/            yaml load/save, defaults               — LANE A
-store/             events.jsonl append + stats derivation — LANE A
-render/            terminal charts (gh-stats style)       — LANE A
-daemon/            tick scheduler, escalation state machine,
+cmd/               cobra CLI
+ipc/               socket client/server/protocol
+config/            yaml load/save, defaults
+store/             events.jsonl append + stats derivation
+render/            terminal charts (gh-stats style)
+daemon/            tick scheduler, reminder state machine,
                    idle detection (one tiny cgo file for
-                   CGEventSourceSecondsSinceLastEventType) — LANE A
-hud/               frozen Go API + objc implementation
-                   + hud/demo visual harness              — LANE B
-Makefile, plist    build, Focus.app (LSUIElement), launchd — LANE A
+                   CGEventSourceSecondsSinceLastEventType)
+hud/               Go API + objc implementation
+                   + hud/demo visual harness
+Makefile, plist    build, Focus.app (LSUIElement), launchd
 ```
 
-- **LANE A never edits `hud/**`. LANE B never edits anything outside `hud/**`.**
-- `hud/hud.go` signatures are **FROZEN**. A change requires orchestrator
-  sign-off first (ping the orchestrator pane), then both lanes move together.
+- In fullscreen style the daemon never drives the pill (`SetFocus`,
+  `ClearFocus`, `Pulse` stay silent); the takeover carries its own text.
 - `daemon` runs policy in goroutines and calls `hud.Run` **last, on the main
   goroutine** (main.go already locks it to the OS thread).
-- go.mod is pre-pinned (cobra, yaml.v3, fatih/color). Lane B adds no deps.
-- The scaffold ships `hud` as headless no-op stubs that log
-  `[hud stub] ...` lines to stderr — Lane A verifies the daemon end-to-end
-  against stub logs before Lane B lands.
+- go.mod is pinned (cobra, yaml.v3, fatih/color); no new deps.
+- Non-darwin / cgo-disabled builds get headless no-op `hud` stubs that log
+  `[hud stub] ...` lines to stderr — daemon E2E asserts against stub logs
+  without putting windows on a shared screen.
 
 ## Verification
 
@@ -168,8 +207,11 @@ Makefile, plist    build, Focus.app (LSUIElement), launchd — LANE A
 go build ./... && go vet ./... && go test ./...
 ```
 
-- Lane A headless: `interval: 10s` test config → `focus daemon` in foreground →
-  `set` → watch stub log lines climb rungs → `escalation` after 2 unacked →
-  `focus ack` resets → events.jsonl rows correct → `focus stats` renders.
-- Lane B visual: `go run ./hud/demo -pill -pulse 2 -takeover`, then
-  `screencapture -x /tmp/shot.png` and inspect the image.
+- Headless (CGO_ENABLED=0 stub build, short `$HOME` under /tmp): short
+  `interval` test config → `focus daemon` in foreground → `set` → `checkin`
+  events tick (one per interval, absorbed while a screen is up) → drifted ack
+  is the only thing that moves distractions → done ack logs done + set →
+  `focus stats` renders.
+- Visual: `go run ./hud/demo -checkin -auto "f,type:next thing,enter"`
+  (or `-pill -pulse 2 -takeover` for pulse style) with `-snap` self-snapshots —
+  `screencapture` from agent shells silently omits app windows.

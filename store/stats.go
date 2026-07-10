@@ -9,6 +9,7 @@ type DayStats struct {
 	Date           string  `json:"date"`
 	Distractions   int     `json:"distractions"`
 	Pulses         int     `json:"pulses"`
+	Checkins       int     `json:"checkins"`
 	Acks           int     `json:"acks"`
 	AvgAckLatencyS float64 `json:"avg_ack_latency_s"`
 	latencyTotal   float64
@@ -57,6 +58,10 @@ func DeriveDays(events []Event, end time.Time, days int, loc *time.Location) []D
 		switch event.Type {
 		case "pulse":
 			day.Pulses++
+		// Routine fullscreen check-ins are reminders, not distractions —
+		// only a drifted ack (or a pulse-mode escalation) moves the metric.
+		case "checkin":
+			day.Checkins++
 		case "ack":
 			day.Acks++
 			if event.Kind == "drifted" {

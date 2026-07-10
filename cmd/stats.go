@@ -63,6 +63,7 @@ func printToday(stats store.TodayStats, jsonOutput bool) error {
 	fmt.Printf("  vs %d yesterday  ", stats.Yesterday.Distractions)
 	render.PctColorInt(stats.Today.Distractions, stats.Yesterday.Distractions).
 		Printf("%s\n", render.FormatPctInt(stats.Today.Distractions, stats.Yesterday.Distractions))
+	fmt.Printf("  Check-ins    %d\n", stats.Today.Checkins)
 	fmt.Printf("  Pulses       %d\n", stats.Today.Pulses)
 	fmt.Printf("  Acks         %d\n", stats.Today.Acks)
 	fmt.Printf("  Avg latency  %.1fs\n", stats.Today.AvgAckLatencyS)

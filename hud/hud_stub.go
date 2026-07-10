@@ -26,7 +26,7 @@ func pulseImpl(rung int) {
 }
 
 func showTakeoverImpl(c TakeoverContent) {
-	stub("takeover focus=%q quote=%q mirror=%q gate=%s", c.FocusText, c.Quote, c.MirrorLine, c.Gate)
+	stub("takeover focus=%q quote=%q mirror=%q rung=%d gate=%s", c.FocusText, c.Quote, c.MirrorLine, c.Rung, c.Gate)
 }
 
 func dismissTakeoverImpl() {

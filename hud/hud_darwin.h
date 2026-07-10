@@ -8,7 +8,7 @@ void hudSetFocus(const char *text, double sinceEpoch);
 void hudClearFocus(void);
 void hudPulse(int rung);
 void hudShowTakeover(const char *focusText, const char *quote,
-                     const char *mirrorLine, double gateSeconds);
+                     const char *mirrorLine, int rung, double gateSeconds);
 void hudDismissTakeover(void);
 void hudSetPaused(int paused);
 

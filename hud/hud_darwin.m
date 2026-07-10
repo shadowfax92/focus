@@ -14,7 +14,7 @@ extern void goHudAck(int kind, int rung, double latencySeconds, const char *newT
 extern void goHudMoved(double x, double y);
 
 // Mirrors hud.AckKind iota order.
-enum { kAckOnTask = 0, kAckDrifted = 1, kAckRefocus = 2 };
+enum { kAckOnTask = 0, kAckDrifted = 1, kAckRefocus = 2, kAckDone = 3 };
 
 static const CGFloat kPillWidth = 460;
 static const CGFloat kPillPadX = 18;
@@ -35,15 +35,16 @@ static void endPulseNow(void);
 static void killPulseSilent(void);
 static void pillAck(int kind);
 static void layoutTakeover(void);
-static void showTakeoverMain(NSString *focus, NSString *quote, NSString *mirror, double gate);
+static void showTakeoverMain(NSString *focus, NSString *quote, NSString *mirror, int rung, double gate);
 static void dismissTakeoverMain(void);
 static void armTakeover(void);
 static void takeoverAck(int kind, NSString *newText);
-static void beginRetype(void);
+static void beginRetype(BOOL doneMode);
 static void endRetype(void);
 static void startCircleBreathing(void);
 static NSAttributedString *armedHintString(void);
 static NSAttributedString *editHintString(void);
+static NSAttributedString *doneHintString(void);
 
 static NSColor *cyan(CGFloat alpha) {
     return [NSColor colorWithRed:0 green:0.85 blue:1.0 alpha:alpha];
@@ -149,6 +150,7 @@ static HudController *_controller = nil;
 static BOOL _tkVisible = NO;
 static BOOL _tkArmed = NO;
 static BOOL _tkEditing = NO;
+static BOOL _tkDoneMode = NO;
 static int _tkGen = 0;
 static double _tkShownAt = 0;
 static int _tkRung = 0;
@@ -410,7 +412,11 @@ static void pillAck(int kind) {
         return;
     }
     if ([chars isEqualToString:@"n"]) {
-        beginRetype();
+        beginRetype(NO);
+        return;
+    }
+    if ([chars isEqualToString:@"f"]) {
+        beginRetype(YES);
         return;
     }
 }
@@ -424,18 +430,22 @@ static void pillAck(int kind) {
 @implementation HudController
 - (BOOL)control:(NSControl *)control textView:(NSTextView *)textView doCommandBySelector:(SEL)commandSelector {
     if (control != _tkField) return NO;
+    BOOL doneMode = _tkDoneMode;
     if (commandSelector == @selector(insertNewline:)) {
         NSString *txt = [_tkField.stringValue stringByTrimmingCharactersInSet:
                             [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        // Empty ⏎ is swallowed: ending with nothing next is the deliberate ⎋.
         if (txt.length > 0) {
             endRetype();
-            takeoverAck(kAckRefocus, txt);
+            takeoverAck(doneMode ? kAckDone : kAckRefocus, txt);
         }
         return YES;
     }
     if (commandSelector == @selector(cancelOperation:)) {
-        // ⎋ only backs out of the retype field — never out of the takeover.
+        // ⎋ backs out of the retype field — never out of the takeover. In done
+        // mode the completion already happened: ⎋ means "done, nothing next".
         endRetype();
+        if (doneMode) takeoverAck(kAckDone, nil);
         return YES;
     }
     return NO;
@@ -480,11 +490,16 @@ static NSAttributedString *hintsWithPairs(NSArray *pairs) {
 }
 
 static NSAttributedString *armedHintString(void) {
-    return hintsWithPairs(@[ @[@"⏎", @"on task"], @[@"D", @"drifted"], @[@"N", @"new focus"] ]);
+    return hintsWithPairs(@[ @[@"⏎", @"still on it"], @[@"D", @"drifted"],
+                             @[@"N", @"change focus"], @[@"F", @"done"] ]);
 }
 
 static NSAttributedString *editHintString(void) {
     return hintsWithPairs(@[ @[@"⏎", @"set new focus"], @[@"⎋", @"back"] ]);
+}
+
+static NSAttributedString *doneHintString(void) {
+    return hintsWithPairs(@[ @[@"⏎", @"start next focus"], @[@"⎋", @"just done"] ]);
 }
 
 static void buildTakeover(void) {
@@ -650,15 +665,16 @@ static void armTakeover(void) {
     }];
 }
 
-static void showTakeoverMain(NSString *focus, NSString *quote, NSString *mirror, double gate) {
+static void showTakeoverMain(NSString *focus, NSString *quote, NSString *mirror, int rung, double gate) {
     buildTakeover();
     _tkGen++;
     int gen = _tkGen;
     _tkVisible = YES;
     _tkArmed = NO;
     if (_tkEditing) endRetype();
-    // The takeover is the next rung above whatever last pulsed.
-    _tkRung = _rung + 1;
+    // The daemon owns the rung: 0 for routine check-ins, the escalated rung
+    // in pulse mode (deriving it from the last pulse here went stale).
+    _tkRung = rung;
     _tkShownAt = nowSec();
 
     [_tk setFrame:[NSScreen mainScreen].frame display:YES];
@@ -720,22 +736,26 @@ static void takeoverAck(int kind, NSString *newText) {
     goHudAck(kind, rung, latency, newText ? newText.UTF8String : "");
 }
 
-static void beginRetype(void) {
+static void beginRetype(BOOL doneMode) {
     if (_tkEditing) return;
     _tkEditing = YES;
+    _tkDoneMode = doneMode;
     _tkFieldBox.hidden = NO;
-    _tkHints.attributedStringValue = editHintString();
+    _tkHints.attributedStringValue = doneMode ? doneHintString() : editHintString();
     // Drop the hints below the field; layoutTakeover restores them on next show.
     _tkHints.frame = NSMakeRect(_tkHints.frame.origin.x,
                                 NSMinY(_tkFieldBox.frame) - 34,
                                 _tkHints.frame.size.width, 24);
-    _tkField.stringValue = _tkFocus.stringValue ?: @"";
+    // Done mode asks for the NEXT focus, so it starts empty; N edits the current one.
+    _tkField.stringValue = doneMode ? @"" : (_tkFocus.stringValue ?: @"");
+    _tkField.placeholderString = doneMode ? @"what's next?" : nil;
     [_tkField selectText:nil];
 }
 
 static void endRetype(void) {
     if (!_tkEditing) return;
     _tkEditing = NO;
+    _tkDoneMode = NO;
     _tkFieldBox.hidden = YES;
     _tkHints.attributedStringValue = armedHintString();
     _tkHints.frame = NSMakeRect(_tkHints.frame.origin.x,
@@ -766,7 +786,9 @@ static void startTimers(void) {
 void hudInit(double idleOpacity, const char *posPreset, double posX, double posY,
              int pulseSeconds) {
     @autoreleasepool {
-        _idleOpacity = (idleOpacity <= 0.0 || idleOpacity > 1.0) ? 0.30 : idleOpacity;
+        // 0 is a valid idle opacity (pill invisible between pulses); only
+        // out-of-range values fall back to the old default.
+        _idleOpacity = (idleOpacity < 0.0 || idleOpacity > 1.0) ? 0.30 : idleOpacity;
         [_posPreset release];
         NSString *p = posPreset ? [NSString stringWithUTF8String:posPreset] : nil;
         _posPreset = [(p.length ? p : @"top-center") retain];
@@ -842,7 +864,7 @@ void hudPulse(int rung) {
 }
 
 void hudShowTakeover(const char *focusText, const char *quote,
-                     const char *mirrorLine, double gateSeconds) {
+                     const char *mirrorLine, int rung, double gateSeconds) {
     char *f = strdup(focusText ? focusText : "");
     char *q = strdup(quote ? quote : "");
     char *m = strdup(mirrorLine ? mirrorLine : "");
@@ -853,7 +875,7 @@ void hudShowTakeover(const char *focusText, const char *quote,
         free(f);
         free(q);
         free(m);
-        showTakeoverMain(fs, qs, ms, gateSeconds);
+        showTakeoverMain(fs, qs, ms, rung, gateSeconds);
     });
 }
 

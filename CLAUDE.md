@@ -1,10 +1,9 @@
 # focus
 
-Read DESIGN.md first — it is the spec, including the two-lane ownership map
-for the parallel build (LANE A: everything except hud/; LANE B: hud/ only).
+Read DESIGN.md first — it is the spec. (The v1 two-lane parallel build and its
+frozen `hud/hud.go` contract are over; change the hud API together with its
+callers when the work needs it.)
 
-- `hud/hud.go` exported signatures are FROZEN — do not change them
-  unilaterally; ping the orchestrator pane instead.
 - Policy lives in Go (`daemon/`), pixels in Objective-C (`hud/`).
 - Verify with: `go build ./... && go vet ./... && go test ./...`
 - UI verification gotcha: `screencapture` from agent shells lacks Screen

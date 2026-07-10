@@ -35,8 +35,9 @@ func main() {
 	pulse := flag.Int("pulse", -1, "fire a pulse at this rung (implies -pill)")
 	pulseDelay := flag.Duration("pulse-delay", 1500*time.Millisecond, "delay before the pulse")
 	pulseSeconds := flag.Int("pulse-seconds", 8, "rung-0 pulse duration (Config.PulseSeconds)")
-	takeover := flag.Bool("takeover", false, "show the takeover")
-	takeoverDelay := flag.Duration("takeover-delay", 3*time.Second, "delay before the takeover")
+	takeover := flag.Bool("takeover", false, "show the takeover (escalation style: rung 2, breathing gate)")
+	checkin := flag.Bool("checkin", false, "show the routine check-in (rung 0, no gate, done hint)")
+	takeoverDelay := flag.Duration("takeover-delay", 3*time.Second, "delay before the takeover/check-in")
 	quote := flag.String("quote", "The main thing is to keep the main thing the main thing.", "takeover quote")
 	mirror := flag.String("mirror", "2nd escalation today · yesterday: 5 · 43m on task", "takeover mirror footer")
 	gate := flag.Duration("gate", 3*time.Second, "takeover breathing gate (0 = off)")
@@ -45,7 +46,7 @@ func main() {
 	posX := flag.Float64("x", 0, "pill x for -pos custom")
 	posY := flag.Float64("y", 0, "pill y for -pos custom")
 	pause := flag.Duration("pause-test", 0, "SetPaused(true) after this delay, resume 2s later (0 = off)")
-	auto := flag.String("auto", "", "comma-separated synthetic input: click|optclick|drag|enter|d|n|type:<text>")
+	auto := flag.String("auto", "", "comma-separated synthetic input: click|optclick|drag|enter|d|n|f|esc|type:<text>")
 	snap := flag.String("snap", "", "write <prefix>-pill.png / <prefix>-takeover.png at -snap-delay")
 	snapDelay := flag.Duration("snap-delay", 4*time.Second, "delay before -snap renders")
 	autoDelay := flag.Duration("auto-delay", 2*time.Second, "wait after the last show step before -auto runs")
@@ -57,9 +58,12 @@ func main() {
 		OnAck: func(kind hud.AckKind, rung int, latency time.Duration, newText string) {
 			fmt.Printf("[demo] OnAck kind=%s rung=%d latency=%.2fs newText=%q\n",
 				kind, rung, latency.Seconds(), newText)
-			if kind == hud.AckRefocus && newText != "" {
-				// Mimic the daemon: a refocus ack sets the new focus.
+			// Mimic the daemon: refocus/done-with-text set the new focus,
+			// done-with-nothing clears it.
+			if (kind == hud.AckRefocus || kind == hud.AckDone) && newText != "" {
 				hud.SetFocus(newText, time.Now())
+			} else if kind == hud.AckDone {
+				hud.ClearFocus()
 			}
 		},
 		OnMoved: func(x, y float64) {
@@ -82,7 +86,16 @@ func main() {
 				FocusText:  *text,
 				Quote:      *quote,
 				MirrorLine: *mirror,
+				Rung:       2,
 				Gate:       *gate,
+			})
+		}
+		if *checkin {
+			time.Sleep(*takeoverDelay)
+			hud.ShowTakeover(hud.TakeoverContent{
+				FocusText:  *text,
+				Quote:      *quote,
+				MirrorLine: "3rd check-in today · 43m on task · yesterday: 2 distractions",
 			})
 		}
 		if *pause > 0 {
@@ -147,6 +160,10 @@ func runAutoStep(step string) {
 		sendKey(2, "d")
 	case step == "n":
 		sendKey(45, "n")
+	case step == "f":
+		sendKey(3, "f")
+	case step == "esc":
+		sendKey(53, "\x1b")
 	case strings.HasPrefix(step, "type:"):
 		for _, r := range step[len("type:"):] {
 			sendKey(0, string(r))

@@ -8,6 +8,7 @@ const (
 	ActionNone ActionKind = iota
 	ActionPulse
 	ActionTakeover
+	ActionCheckin
 )
 
 type Action struct {
@@ -60,6 +61,21 @@ func (m *Machine) Tick(now time.Time, escalateAfter int) Action {
 	m.state.UnackedPulses++
 	m.state.ReminderAt = now
 	return Action{Kind: ActionPulse, Rung: m.state.Rung}
+}
+
+// Checkin is the whole fullscreen-mode ladder: every due tick shows the
+// takeover directly, rung stays 0, and a screen already up absorbs the tick
+// (no stacking, no escalation growth).
+func (m *Machine) Checkin(now time.Time) Action {
+	if m.state.InTakeover {
+		return Action{}
+	}
+	m.state = MachineState{
+		AwaitingAck: true,
+		InTakeover:  true,
+		ReminderAt:  now,
+	}
+	return Action{Kind: ActionCheckin}
 }
 
 func (m *Machine) Ack() MachineState {

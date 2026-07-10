@@ -49,6 +49,30 @@ func TestEscalationMachine(t *testing.T) {
 	}
 }
 
+func TestCheckinNeverEscalatesOrStacks(t *testing.T) {
+	machine := NewMachine(MachineState{})
+	now := time.Now()
+
+	got := machine.Checkin(now)
+	if got.Kind != ActionCheckin || got.Rung != 0 {
+		t.Fatalf("first checkin = %+v, want rung-0 ActionCheckin", got)
+	}
+	state := machine.State()
+	if !state.InTakeover || !state.AwaitingAck || state.ReminderAt != now {
+		t.Fatalf("checkin state = %+v", state)
+	}
+
+	if got := machine.Checkin(now.Add(time.Minute)); got.Kind != ActionNone {
+		t.Fatalf("tick while a check-in is up = %+v, want none", got)
+	}
+
+	machine.Ack()
+	got = machine.Checkin(now.Add(2 * time.Minute))
+	if got.Kind != ActionCheckin || machine.State().Rung != 0 {
+		t.Fatalf("post-ack checkin = %+v rung=%d, want fresh rung-0 checkin", got, machine.State().Rung)
+	}
+}
+
 func TestAckResetsRung(t *testing.T) {
 	machine := NewMachine(MachineState{})
 	now := time.Now()

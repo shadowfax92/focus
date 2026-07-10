@@ -12,6 +12,11 @@ import (
 
 const defaultQuote = "The main thing is to keep the main thing the main thing."
 
+const (
+	StyleFullscreen = "fullscreen"
+	StylePulse      = "pulse"
+)
+
 type Position struct {
 	Preset string  `yaml:"preset" json:"preset"`
 	X      float64 `yaml:"x" json:"x"`
@@ -19,6 +24,7 @@ type Position struct {
 }
 
 type Config struct {
+	ReminderStyle        string        `yaml:"reminder_style" json:"reminder_style"`
 	Interval             time.Duration `yaml:"interval" json:"interval"`
 	PulseSeconds         int           `yaml:"pulse_seconds" json:"pulse_seconds"`
 	EscalateAfter        int           `yaml:"escalate_after" json:"escalate_after"`
@@ -30,6 +36,7 @@ type Config struct {
 }
 
 type diskConfig struct {
+	ReminderStyle        string   `yaml:"reminder_style"`
 	Interval             string   `yaml:"interval"`
 	PulseSeconds         int      `yaml:"pulse_seconds"`
 	EscalateAfter        int      `yaml:"escalate_after"`
@@ -42,11 +49,12 @@ type diskConfig struct {
 
 func Default() Config {
 	return Config{
+		ReminderStyle:        StyleFullscreen,
 		Interval:             15 * time.Minute,
 		PulseSeconds:         8,
 		EscalateAfter:        2,
 		BreathingGateSeconds: 3,
-		IdleOpacity:          0.30,
+		IdleOpacity:          0,
 		IdlePauseMinutes:     5,
 		Position:             Position{Preset: "top-center"},
 		Quotes:               []string{defaultQuote},
@@ -113,6 +121,11 @@ func Marshal(cfg Config) ([]byte, error) {
 }
 
 func (c Config) Validate() error {
+	switch c.ReminderStyle {
+	case StyleFullscreen, StylePulse:
+	default:
+		return fmt.Errorf("reminder_style must be %s or %s", StyleFullscreen, StylePulse)
+	}
 	if c.Interval <= 0 {
 		return fmt.Errorf("interval must be positive")
 	}
@@ -141,6 +154,7 @@ func (c Config) Validate() error {
 
 func toDisk(c Config) diskConfig {
 	return diskConfig{
+		ReminderStyle:        c.ReminderStyle,
 		Interval:             c.Interval.String(),
 		PulseSeconds:         c.PulseSeconds,
 		EscalateAfter:        c.EscalateAfter,
@@ -158,6 +172,7 @@ func fromDisk(d diskConfig) (Config, error) {
 		return Config{}, fmt.Errorf("parse interval: %w", err)
 	}
 	return Config{
+		ReminderStyle:        d.ReminderStyle,
 		Interval:             interval,
 		PulseSeconds:         d.PulseSeconds,
 		EscalateAfter:        d.EscalateAfter,

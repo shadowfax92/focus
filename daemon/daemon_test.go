@@ -10,9 +10,10 @@ import (
 	"github.com/shadowfax92/focus/store"
 )
 
-func testDaemon(t *testing.T, now *time.Time) *Daemon {
+func testDaemon(t *testing.T, now *time.Time, style string) *Daemon {
 	t.Helper()
 	cfg := config.Default()
+	cfg.ReminderStyle = style
 	cfg.Interval = time.Minute
 	return &Daemon{
 		cfg:       cfg,
@@ -26,9 +27,35 @@ func testDaemon(t *testing.T, now *time.Time) *Daemon {
 	}
 }
 
+func eventTypes(t *testing.T, d *Daemon) []string {
+	t.Helper()
+	events, err := d.events.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	types := make([]string, len(events))
+	for i, event := range events {
+		types[i] = event.Type
+	}
+	return types
+}
+
+func wantEventTypes(t *testing.T, d *Daemon, want []string) {
+	t.Helper()
+	got := eventTypes(t, d)
+	if len(got) != len(want) {
+		t.Fatalf("event types = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("event %d = %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 func TestHandleSetAckPauseResumeDoneRoundTrip(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
-	d := testDaemon(t, &now)
+	d := testDaemon(t, &now, config.StylePulse)
 
 	requests := []ipc.Request{
 		{Action: "set", Text: "ship backend"},
@@ -68,7 +95,7 @@ func TestHandleSetAckPauseResumeDoneRoundTrip(t *testing.T) {
 
 func TestIdleGuardSkipsTicksAndPulsesOnReturn(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
-	d := testDaemon(t, &now)
+	d := testDaemon(t, &now, config.StylePulse)
 	d.state.FocusText = "stay focused"
 	d.state.SetAt = now.Add(-time.Hour)
 	d.nextTick = now
@@ -101,7 +128,7 @@ func TestIdleGuardSkipsTicksAndPulsesOnReturn(t *testing.T) {
 
 func TestResumePreservesTakeoverState(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
-	d := testDaemon(t, &now)
+	d := testDaemon(t, &now, config.StylePulse)
 	d.state.FocusText = "finish the task"
 	d.state.SetAt = now.Add(-time.Hour)
 	d.machine.Start(now.Add(-2 * time.Minute))
@@ -121,5 +148,140 @@ func TestResumePreservesTakeoverState(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Type != "resume" {
 		t.Fatalf("resume events = %+v", events)
+	}
+}
+
+func TestFullscreenTicksShowCheckinsNotEscalations(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+
+	if response := d.Handle(ipc.Request{Action: "set", Text: "ship it"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	// set must not fire an instant screen; the first check-in is a full interval out.
+	wantEventTypes(t, d, []string{"set"})
+	if d.machine.State().InTakeover {
+		t.Fatal("set opened a takeover immediately")
+	}
+
+	now = now.Add(d.cfg.Interval + time.Second)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	wantEventTypes(t, d, []string{"set", "checkin"})
+	if !d.machine.State().InTakeover {
+		t.Fatal("check-in did not mark InTakeover")
+	}
+
+	// Unacked screens absorb further ticks — never a second checkin or an escalation.
+	now = now.Add(d.cfg.Interval + time.Second)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	wantEventTypes(t, d, []string{"set", "checkin"})
+
+	if response := d.Handle(ipc.Request{Action: "ack", Kind: "drifted"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	now = now.Add(d.cfg.Interval + time.Second)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	wantEventTypes(t, d, []string{"set", "checkin", "ack", "checkin"})
+
+	events, err := d.events.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := store.DeriveToday(events, now, time.Local)
+	if stats.Today.Distractions != 1 || stats.Today.Checkins != 2 {
+		t.Fatalf("stats = %+v, want 1 distraction (drifted only) and 2 checkins", stats.Today)
+	}
+}
+
+func TestFullscreenDoneAckSetsNextFocus(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+
+	if response := d.Handle(ipc.Request{Action: "set", Text: "ship it"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	now = now.Add(d.cfg.Interval + time.Second)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(30 * time.Second)
+	if response := d.Handle(ipc.Request{Action: "ack", Kind: "done", Text: "write the follow-up"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+
+	wantEventTypes(t, d, []string{"set", "checkin", "ack", "done", "set"})
+	events, err := d.events.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack := events[2]
+	if ack.Kind != "done" || ack.LatencyS == nil || *ack.LatencyS != 30 {
+		t.Fatalf("done ack = %+v, want kind done with 30s latency", ack)
+	}
+	if events[4].Text != "write the follow-up" || d.state.FocusText != "write the follow-up" {
+		t.Fatalf("next focus not set: event=%+v state=%q", events[4], d.state.FocusText)
+	}
+	if d.machine.State().InTakeover {
+		t.Fatal("takeover state not cleared by done ack")
+	}
+}
+
+func TestFullscreenDoneAckWithoutTextClearsFocus(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+
+	if response := d.Handle(ipc.Request{Action: "set", Text: "ship it"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	now = now.Add(d.cfg.Interval + time.Second)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	if response := d.Handle(ipc.Request{Action: "ack", Kind: "done"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+
+	wantEventTypes(t, d, []string{"set", "checkin", "ack", "done"})
+	if d.state.FocusText != "" {
+		t.Fatalf("focus not cleared: %q", d.state.FocusText)
+	}
+	// No focus → no further reminders until the next set.
+	now = now.Add(d.cfg.Interval + time.Second)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	wantEventTypes(t, d, []string{"set", "checkin", "ack", "done"})
+}
+
+func TestFullscreenIdleReturnFiresWelcomeBackCheckin(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	d.state.FocusText = "stay focused"
+	d.state.SetAt = now.Add(-time.Hour)
+	d.nextTick = now
+	idle := 10 * time.Minute
+	d.idle = func() float64 { return idle.Seconds() }
+
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	if !d.idleGuarded || d.machine.State().InTakeover {
+		t.Fatalf("idle tick was not skipped: guarded=%v state=%+v", d.idleGuarded, d.machine.State())
+	}
+
+	idle = 0
+	now = now.Add(time.Second)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	wantEventTypes(t, d, []string{"idle_return", "checkin"})
+	if !d.machine.State().InTakeover {
+		t.Fatal("welcome-back check-in not showing")
 	}
 }

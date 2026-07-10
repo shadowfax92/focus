@@ -50,7 +50,7 @@ func showTakeoverImpl(c TakeoverContent) {
 	defer C.free(unsafe.Pointer(cf))
 	defer C.free(unsafe.Pointer(cq))
 	defer C.free(unsafe.Pointer(cm))
-	C.hudShowTakeover(cf, cq, cm, C.double(c.Gate.Seconds()))
+	C.hudShowTakeover(cf, cq, cm, C.int(c.Rung), C.double(c.Gate.Seconds()))
 }
 
 func dismissTakeoverImpl() {

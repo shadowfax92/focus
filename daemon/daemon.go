@@ -94,6 +94,27 @@ func (d *Daemon) hudConfig() hud.Config {
 	}
 }
 
+// fullscreen reports whether reminders go straight to the check-in screen.
+// In this mode the pill is never shown: nothing is on screen between
+// reminders, so SetFocus/ClearFocus/Pulse are only driven in pulse style.
+func (d *Daemon) fullscreen() bool { return d.cfg.ReminderStyle != config.StylePulse }
+
+// reminderLocked is the immediate reminder fired outside the tick cadence
+// (welcome-back after idle, or on-set in pulse style).
+func (d *Daemon) reminderLocked(now time.Time) Action {
+	if d.fullscreen() {
+		return d.machine.Checkin(now)
+	}
+	return d.machine.Start(now)
+}
+
+func (d *Daemon) tickLocked(now time.Time) Action {
+	if d.fullscreen() {
+		return d.machine.Checkin(now)
+	}
+	return d.machine.Tick(now, d.cfg.EscalateAfter)
+}
+
 func (d *Daemon) restoreHUD() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -102,7 +123,9 @@ func (d *Daemon) restoreHUD() {
 		hud.ClearFocus()
 		return
 	}
-	hud.SetFocus(d.state.FocusText, d.state.SetAt)
+	if !d.fullscreen() {
+		hud.SetFocus(d.state.FocusText, d.state.SetAt)
+	}
 	paused := d.isPaused(now)
 	hud.SetPaused(paused)
 	if !paused && d.machine.State().InTakeover {
@@ -149,7 +172,7 @@ func (d *Daemon) poll() error {
 		if d.idleGuarded {
 			d.idleGuarded = false
 			d.machine.Reset()
-			action := d.machine.Start(now)
+			action := d.reminderLocked(now)
 			d.nextTick = now.Add(d.cfg.Interval)
 			if err := d.appendLocked(store.Event{TS: now, Type: "idle_return"}); err != nil {
 				return err
@@ -160,7 +183,7 @@ func (d *Daemon) poll() error {
 	if now.Before(d.nextTick) {
 		return nil
 	}
-	action := d.machine.Tick(now, d.cfg.EscalateAfter)
+	action := d.tickLocked(now)
 	d.nextTick = now.Add(d.cfg.Interval)
 	return d.performLocked(action, now)
 }
@@ -221,6 +244,12 @@ func (d *Daemon) set(text string) error {
 	if err := d.appendLocked(store.Event{TS: now, Type: "set", Text: text}); err != nil {
 		return err
 	}
+	hud.DismissTakeover()
+	if d.fullscreen() {
+		// The first check-in comes a full interval out — `focus set` must not
+		// answer with an instant screen grab.
+		return d.saveLocked()
+	}
 	hud.SetFocus(text, now)
 	if d.isPaused(now) {
 		hud.SetPaused(true)
@@ -279,7 +308,9 @@ func (d *Daemon) resumeLocked(now time.Time) error {
 	}
 	hud.SetPaused(false)
 	if d.state.FocusText != "" {
-		hud.SetFocus(d.state.FocusText, d.state.SetAt)
+		if !d.fullscreen() {
+			hud.SetFocus(d.state.FocusText, d.state.SetAt)
+		}
 		if d.machine.State().InTakeover {
 			hud.ShowTakeover(d.takeoverContentLocked(now))
 		}
@@ -287,12 +318,18 @@ func (d *Daemon) resumeLocked(now time.Time) error {
 	return d.saveLocked()
 }
 
+// ack records the response to a reminder. kind "done" completes the current
+// focus: it logs ack + done, then either sets newText as the next focus or —
+// when newText is empty — clears everything so no reminder fires until the
+// next `focus set`.
 func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung *int) error {
 	if kind == "" {
 		kind = "on_task"
 	}
-	if kind != "on_task" && kind != "drifted" && kind != "refocus" {
-		return fmt.Errorf("ack kind must be on_task, drifted, or refocus")
+	switch kind {
+	case "on_task", "drifted", "refocus", "done":
+	default:
+		return fmt.Errorf("ack kind must be on_task, drifted, refocus, or done")
 	}
 	if kind == "refocus" && strings.TrimSpace(newText) == "" {
 		return fmt.Errorf("refocus ack requires new focus text")
@@ -326,14 +363,27 @@ func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung 
 	d.machine.Ack()
 	d.nextTick = now.Add(d.cfg.Interval)
 	hud.DismissTakeover()
-	if kind == "refocus" {
-		newText = strings.TrimSpace(newText)
+	newText = strings.TrimSpace(newText)
+	if kind == "done" {
+		if err := d.appendLocked(store.Event{TS: now, Type: "done"}); err != nil {
+			return err
+		}
+		if newText == "" {
+			d.state.FocusText = ""
+			d.state.SetAt = time.Time{}
+			hud.ClearFocus()
+			return d.saveLocked()
+		}
+	}
+	if newText != "" && (kind == "refocus" || kind == "done") {
 		d.state.FocusText = newText
 		d.state.SetAt = now
 		if err := d.appendLocked(store.Event{TS: now, Type: "set", Text: newText}); err != nil {
 			return err
 		}
-		hud.SetFocus(newText, now)
+		if !d.fullscreen() {
+			hud.SetFocus(newText, now)
+		}
 	}
 	return d.saveLocked()
 }
@@ -370,10 +420,20 @@ func (d *Daemon) performLocked(action Action, now time.Time) error {
 			return err
 		}
 		hud.ShowTakeover(d.takeoverContentLocked(now))
+	case ActionCheckin:
+		if err := d.appendLocked(store.Event{TS: now, Type: "checkin"}); err != nil {
+			return err
+		}
+		hud.ShowTakeover(d.takeoverContentLocked(now))
 	}
 	return d.saveLocked()
 }
 
+// takeoverContentLocked builds the screen for whichever reminder the current
+// style shows: a routine check-in (rung 0, keys armed immediately — a
+// breathing gate 4×/hour would be pure friction) or a pulse-mode escalation
+// (explicit rung, configured gate). Called after the checkin/escalation event
+// is appended, so today's count includes the one being shown.
 func (d *Daemon) takeoverContentLocked(now time.Time) hud.TakeoverContent {
 	quote := ""
 	if len(d.cfg.Quotes) > 0 {
@@ -384,6 +444,16 @@ func (d *Daemon) takeoverContentLocked(now time.Time) hud.TakeoverContent {
 		log.Printf("focus mirror stats: %v", err)
 	}
 	today := store.DeriveToday(events, now, time.Local)
+	minutes := max(int(now.Sub(d.state.SetAt).Minutes()), 0)
+	content := hud.TakeoverContent{
+		FocusText: d.state.FocusText,
+		Quote:     quote,
+	}
+	if d.fullscreen() {
+		content.MirrorLine = fmt.Sprintf("%s check-in today · %dm on task · yesterday: %d distractions",
+			ordinal(today.Today.Checkins), minutes, today.Yesterday.Distractions)
+		return content
+	}
 	escalations := 0
 	date := now.In(time.Local).Format("2006-01-02")
 	for _, event := range events {
@@ -391,14 +461,11 @@ func (d *Daemon) takeoverContentLocked(now time.Time) hud.TakeoverContent {
 			escalations++
 		}
 	}
-	minutes := int(now.Sub(d.state.SetAt).Minutes())
-	return hud.TakeoverContent{
-		FocusText: d.state.FocusText,
-		Quote:     quote,
-		MirrorLine: fmt.Sprintf("%s escalation today · yesterday: %d · %dm on task",
-			ordinal(escalations), today.Yesterday.Distractions, max(minutes, 0)),
-		Gate: time.Duration(d.cfg.BreathingGateSeconds) * time.Second,
-	}
+	content.MirrorLine = fmt.Sprintf("%s escalation today · yesterday: %d · %dm on task",
+		ordinal(escalations), today.Yesterday.Distractions, minutes)
+	content.Rung = d.machine.State().Rung
+	content.Gate = time.Duration(d.cfg.BreathingGateSeconds) * time.Second
+	return content
 }
 
 func ordinal(n int) string {

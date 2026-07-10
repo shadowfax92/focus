@@ -22,6 +22,30 @@ func TestLoadFromMergesDefaultsAndParsesDuration(t *testing.T) {
 	if cfg.EscalateAfter != 2 || cfg.Position.Preset != "top-center" {
 		t.Fatalf("defaults were not preserved: %+v", cfg)
 	}
+	if cfg.ReminderStyle != StyleFullscreen || cfg.IdleOpacity != 0 {
+		t.Fatalf("v2 defaults not applied: %+v", cfg)
+	}
+}
+
+func TestReminderStyle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("reminder_style: pulse\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReminderStyle != StylePulse {
+		t.Fatalf("reminder_style = %q, want pulse", cfg.ReminderStyle)
+	}
+
+	if err := os.WriteFile(path, []byte("reminder_style: nope\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(path); err == nil {
+		t.Fatal("invalid reminder_style was accepted")
+	}
 }
 
 func TestSaveLoadRoundTrip(t *testing.T) {

@@ -31,6 +31,32 @@ func TestDeriveDaysDistractionAndLatency(t *testing.T) {
 	}
 }
 
+func TestCheckinsAreNotDistractions(t *testing.T) {
+	loc := time.UTC
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, loc)
+	latency := 1.5
+	events := []Event{
+		{TS: now.Add(-3 * time.Hour), Type: "checkin"},
+		{TS: now.Add(-3 * time.Hour), Type: "ack", Kind: "on_task", LatencyS: &latency},
+		{TS: now.Add(-2 * time.Hour), Type: "checkin"},
+		{TS: now.Add(-2 * time.Hour), Type: "ack", Kind: "drifted", LatencyS: &latency},
+		{TS: now.Add(-time.Hour), Type: "checkin"},
+		{TS: now.Add(-time.Hour), Type: "ack", Kind: "done", LatencyS: &latency},
+		{TS: now.Add(-time.Hour), Type: "done"},
+		{TS: now.Add(-time.Hour), Type: "set", Text: "next thing"},
+	}
+	got := DeriveToday(events, now, loc)
+	if got.Today.Checkins != 3 {
+		t.Fatalf("checkins = %d, want 3", got.Today.Checkins)
+	}
+	if got.Today.Distractions != 1 {
+		t.Fatalf("distractions = %d, want 1 (drifted ack only)", got.Today.Distractions)
+	}
+	if got.Today.Acks != 3 || got.Today.AvgAckLatencyS != 1.5 {
+		t.Fatalf("acks/latency = %d/%v, want 3/1.5", got.Today.Acks, got.Today.AvgAckLatencyS)
+	}
+}
+
 func TestDeriveWeeksAndImprovingStreak(t *testing.T) {
 	loc := time.UTC
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, loc) // Friday

@@ -1,7 +1,4 @@
 // Package hud is the only bridge between daemon policy and on-screen pixels.
-// The exported API below is FROZEN for the parallel build: the backend lane
-// compiles against it, the UI lane implements it. Signature changes need
-// orchestrator sign-off (see DESIGN.md).
 //
 // The real implementation is cgo Objective-C (hud_darwin.go + hud_darwin.m);
 // non-darwin or cgo-disabled builds fall back to the headless stubs in
@@ -16,6 +13,9 @@ const (
 	AckOnTask AckKind = iota
 	AckDrifted
 	AckRefocus
+	// AckDone completes the current focus. newText carries the next focus
+	// typed on the takeover, or "" when nothing comes next.
+	AckDone
 )
 
 func (k AckKind) String() string {
@@ -26,6 +26,8 @@ func (k AckKind) String() string {
 		return "drifted"
 	case AckRefocus:
 		return "refocus"
+	case AckDone:
+		return "done"
 	}
 	return "unknown"
 }
@@ -46,7 +48,12 @@ type TakeoverContent struct {
 	FocusText  string
 	Quote      string
 	MirrorLine string
-	Gate       time.Duration
+	// Rung is echoed back in the ack; routine check-ins pass 0, pulse-mode
+	// escalations the rung they escalated at.
+	Rung int
+	// Gate is the breathing-gate delay before the ack keys arm; 0 arms
+	// immediately (the routine check-in default).
+	Gate time.Duration
 }
 
 // Events are invoked from the UI thread; handlers must not block.
