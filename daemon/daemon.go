@@ -16,16 +16,18 @@ import (
 )
 
 type Daemon struct {
-	mu          sync.Mutex
-	cfg         config.Config
-	events      *store.Store
-	statePath   string
-	state       State
-	machine     *Machine
-	now         func() time.Time
-	idle        func() float64
-	nextTick    time.Time
-	idleGuarded bool
+	mu           sync.Mutex
+	cfg          config.Config
+	events       *store.Store
+	statePath    string
+	state        State
+	machine      *Machine
+	now          func() time.Time
+	idle         func() float64
+	nextTick     time.Time
+	idleGuarded  bool
+	setFocusHUD  func(string, time.Time)
+	setPausedHUD func(bool)
 }
 
 func New(cfg config.Config) (*Daemon, error) {
@@ -94,22 +96,40 @@ func (d *Daemon) hudConfig() hud.Config {
 	}
 }
 
-// fullscreen reports whether reminders go straight to the check-in screen.
-// In this mode the pill is never shown: nothing is on screen between
-// reminders, so SetFocus/ClearFocus/Pulse are only driven in pulse style.
-func (d *Daemon) fullscreen() bool { return d.cfg.ReminderStyle != config.StylePulse }
+// directCheckins reports whether interval reminders go straight to the
+// full-screen check-in instead of climbing the pulse escalation ladder.
+// Ambient pill presentation is independent of this cadence choice.
+func (d *Daemon) directCheckins() bool { return d.cfg.ReminderStyle != config.StylePulse }
+
+// presentFocus sends focus text to the HUD. Tests replace this narrow output
+// seam so presentation policy can be verified without launching Cocoa.
+func (d *Daemon) presentFocus(text string, since time.Time) {
+	if d.setFocusHUD != nil {
+		d.setFocusHUD(text, since)
+		return
+	}
+	hud.SetFocus(text, since)
+}
+
+func (d *Daemon) presentPaused(paused bool) {
+	if d.setPausedHUD != nil {
+		d.setPausedHUD(paused)
+		return
+	}
+	hud.SetPaused(paused)
+}
 
 // reminderLocked is the immediate reminder fired outside the tick cadence
 // (welcome-back after idle, or on-set in pulse style).
 func (d *Daemon) reminderLocked(now time.Time) Action {
-	if d.fullscreen() {
+	if d.directCheckins() {
 		return d.machine.Checkin(now)
 	}
 	return d.machine.Start(now)
 }
 
 func (d *Daemon) tickLocked(now time.Time) Action {
-	if d.fullscreen() {
+	if d.directCheckins() {
 		return d.machine.Checkin(now)
 	}
 	return d.machine.Tick(now, d.cfg.EscalateAfter)
@@ -123,11 +143,9 @@ func (d *Daemon) restoreHUD() {
 		hud.ClearFocus()
 		return
 	}
-	if !d.fullscreen() {
-		hud.SetFocus(d.state.FocusText, d.state.SetAt)
-	}
+	d.presentFocus(d.state.FocusText, d.state.SetAt)
 	paused := d.isPaused(now)
-	hud.SetPaused(paused)
+	d.presentPaused(paused)
 	if !paused && d.machine.State().InTakeover {
 		hud.ShowTakeover(d.takeoverContentLocked(now))
 	}
@@ -254,14 +272,14 @@ func (d *Daemon) set(text string) error {
 		return err
 	}
 	hud.DismissTakeover()
-	if d.fullscreen() {
-		// The first check-in comes a full interval out — `focus set` must not
-		// answer with an instant screen grab.
+	d.presentFocus(text, now)
+	if d.isPaused(now) {
+		d.presentPaused(true)
 		return d.saveLocked()
 	}
-	hud.SetFocus(text, now)
-	if d.isPaused(now) {
-		hud.SetPaused(true)
+	if d.directCheckins() {
+		// The first check-in comes a full interval out — `focus set` must not
+		// answer with an instant screen grab.
 		return d.saveLocked()
 	}
 	if err := d.performLocked(d.machine.Start(now), now); err != nil {
@@ -290,6 +308,7 @@ func (d *Daemon) clearFocusLocked() error {
 	d.machine.Reset()
 	hud.DismissTakeover()
 	hud.ClearFocus()
+	d.presentPaused(false)
 	return d.saveLocked()
 }
 
@@ -303,7 +322,7 @@ func (d *Daemon) pause(duration time.Duration) error {
 		return err
 	}
 	hud.DismissTakeover()
-	hud.SetPaused(true)
+	d.presentPaused(true)
 	return d.saveLocked()
 }
 
@@ -322,11 +341,9 @@ func (d *Daemon) resumeLocked(now time.Time) error {
 	if err := d.appendLocked(store.Event{TS: now, Type: "resume"}); err != nil {
 		return err
 	}
-	hud.SetPaused(false)
+	d.presentPaused(false)
 	if d.state.FocusText != "" {
-		if !d.fullscreen() {
-			hud.SetFocus(d.state.FocusText, d.state.SetAt)
-		}
+		d.presentFocus(d.state.FocusText, d.state.SetAt)
 		if d.machine.State().InTakeover {
 			hud.ShowTakeover(d.takeoverContentLocked(now))
 		}
@@ -355,8 +372,11 @@ func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung 
 	if d.state.FocusText == "" {
 		return fmt.Errorf("nothing is currently focused")
 	}
-	now := d.now()
 	previous := d.machine.State()
+	if !previous.AwaitingAck {
+		return fmt.Errorf("no reminder is awaiting acknowledgement")
+	}
+	now := d.now()
 	rung := previous.Rung
 	if reportedRung != nil {
 		rung = *reportedRung
@@ -394,9 +414,7 @@ func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung 
 		if err := d.appendLocked(store.Event{TS: now, Type: "set", Text: newText}); err != nil {
 			return err
 		}
-		if !d.fullscreen() {
-			hud.SetFocus(newText, now)
-		}
+		d.presentFocus(newText, now)
 	}
 	return d.saveLocked()
 }
@@ -443,10 +461,10 @@ func (d *Daemon) performLocked(action Action, now time.Time) error {
 }
 
 // takeoverContentLocked builds the screen for whichever reminder the current
-// style shows: a routine check-in (rung 0, keys armed immediately — a
-// breathing gate 4×/hour would be pure friction) or a pulse-mode escalation
-// (explicit rung, configured gate). Called after the checkin/escalation event
-// is appended, so today's count includes the one being shown.
+// style shows: a routine check-in (rung 0, no breathing gate; keys arm after
+// the HUD fade-in) or a pulse-mode escalation (explicit rung, configured
+// gate). Called after the checkin/escalation event is appended, so today's
+// count includes the one being shown.
 func (d *Daemon) takeoverContentLocked(now time.Time) hud.TakeoverContent {
 	quote := ""
 	if len(d.cfg.Quotes) > 0 {
@@ -462,7 +480,7 @@ func (d *Daemon) takeoverContentLocked(now time.Time) hud.TakeoverContent {
 		FocusText: d.state.FocusText,
 		Quote:     quote,
 	}
-	if d.fullscreen() {
+	if d.directCheckins() {
 		// max guards re-shows whose checkin event landed before midnight —
 		// "0th check-in today" is worse than an off-by-one at 12:01am.
 		content.MirrorLine = fmt.Sprintf("%s check-in today · %dm on task · yesterday: %d distractions",

@@ -51,8 +51,8 @@ type TakeoverContent struct {
 	// Rung is echoed back in the ack; routine check-ins pass 0, pulse-mode
 	// escalations the rung they escalated at.
 	Rung int
-	// Gate is the breathing-gate delay before the ack keys arm; 0 arms
-	// immediately (the routine check-in default).
+	// Gate is the breathing-gate delay before the ack keys arm. A value of 0
+	// skips the breathing circle; the routine check-in arms after its fade-in.
 	Gate time.Duration
 }
 
