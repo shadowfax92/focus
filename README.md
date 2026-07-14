@@ -10,7 +10,7 @@
 
 `focus` keeps your highest-priority task visible in a quiet ambient pill. On a cadence you pick (15m, 30m…), a full-screen check-in dissolves your work behind a blur until you answer. Every check-in and response is logged locally so distraction trends come from what actually happened.
 
-- **Always-visible priority** — a subtle, click-through HUD follows you across Spaces
+- **Always-visible priority** — a subtle, directly draggable HUD follows you across Spaces
 - **Full-screen check-ins** — the reminder you can't not notice, on your `interval`
 - **One-keystroke answers** — `⏎` still on it, `D` drifted, `N` change focus, `F` done (and type what's next right there)
 - **Idle-aware** — an empty desk never gets a check-in; returning does
@@ -102,7 +102,7 @@ escalate_after: 2
 breathing_gate_seconds: 3    # escalation takeovers; check-ins arm when faded in
 ```
 
-`interval` uses Go-style durations. It drives direct check-ins in fullscreen style and pulse-ladder ticks in pulse style. Position presets are `top-center`, `top-right`, `top-left`, and `custom`; dragging the interactive pill persists a custom position.
+`interval` uses Go-style durations. It drives direct check-ins in fullscreen style and pulse-ladder ticks in pulse style. Position presets are `top-center`, `top-right`, `top-left`, and `custom`; the visible pill is directly draggable with no modifier key, and dragging it persists a custom position. A click without movement between reminders does nothing.
 
 ## Local data
 

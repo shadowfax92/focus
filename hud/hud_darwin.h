@@ -13,12 +13,15 @@ void hudDismissTakeover(void);
 void hudSetPaused(int paused);
 
 // Test hooks for hud/demo only (not part of the frozen Go API): synthesize
-// input through the real event path ([NSWindow sendEvent:]) so acks and drags
-// are verifiable without OS-level event injection, which would require
-// Accessibility permission.
+// input through the real event path ([NSWindow sendEvent:]) while honoring the
+// window's ignoresMouseEvents state, so acks and drags are verifiable without
+// OS-level event injection, which would require Accessibility permission.
 void hudTestKey(unsigned short keyCode, const char *chars);
+// optionHeld only selects the drifted acknowledgement during an active pulse;
+// ambient dragging never requires it.
 void hudTestPillClick(int optionHeld);
 void hudTestPillDrag(double dx, double dy);
+double hudTestPillAlpha(void);
 // Renders the pill/takeover view layers to PNGs (empty path = skip). Works
 // without Screen Recording permission, unlike screencapture; NSVisualEffectView
 // blur is a window-server composite and comes out dark, everything else is
