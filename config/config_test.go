@@ -9,14 +9,14 @@ import (
 
 func TestLoadFromMergesDefaultsAndParsesDuration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("interval: 10s\npulse_seconds: 12\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("interval: 15m0s\npulse_seconds: 12\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadFrom(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Interval != 10*time.Second || cfg.PulseSeconds != 12 {
+	if cfg.Interval != 15*time.Minute || cfg.PulseSeconds != 12 {
 		t.Fatalf("unexpected overrides: %+v", cfg)
 	}
 	if cfg.EscalateAfter != 2 || cfg.Position.Preset != "top-center" {
