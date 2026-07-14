@@ -362,8 +362,11 @@ func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung 
 	if d.state.FocusText == "" {
 		return fmt.Errorf("nothing is currently focused")
 	}
-	now := d.now()
 	previous := d.machine.State()
+	if !previous.AwaitingAck {
+		return fmt.Errorf("no reminder is awaiting acknowledgement")
+	}
+	now := d.now()
 	rung := previous.Rung
 	if reportedRung != nil {
 		rung = *reportedRung

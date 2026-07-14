@@ -212,6 +212,30 @@ func TestFullscreenTicksShowCheckinsNotEscalations(t *testing.T) {
 	}
 }
 
+func TestFullscreenAmbientAckDoesNotDelayCheckin(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	recordPresentedFocus(d)
+
+	if response := d.Handle(ipc.Request{Action: "set", Text: "ship it"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	scheduled := d.nextTick
+	if response := d.Handle(ipc.Request{Action: "ack", Kind: "drifted"}); response.OK {
+		t.Fatal("ambient pill acknowledgement was accepted without a pending reminder")
+	}
+	wantEventTypes(t, d, []string{"set"})
+	if !d.nextTick.Equal(scheduled) {
+		t.Fatalf("ambient acknowledgement moved next tick from %s to %s", scheduled, d.nextTick)
+	}
+
+	now = scheduled
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	wantEventTypes(t, d, []string{"set", "checkin"})
+}
+
 func TestFullscreenDoneAckSetsNextFocus(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
 	d := testDaemon(t, &now, config.StyleFullscreen)
@@ -390,6 +414,10 @@ func TestDoneAckWhilePausedClearsPause(t *testing.T) {
 
 	if response := d.Handle(ipc.Request{Action: "set", Text: "ship it"}); !response.OK {
 		t.Fatal(response.Error)
+	}
+	now = now.Add(d.cfg.Interval)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
 	}
 	if response := d.Handle(ipc.Request{Action: "pause", Duration: "30m"}); !response.OK {
 		t.Fatal(response.Error)
