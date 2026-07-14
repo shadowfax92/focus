@@ -306,7 +306,8 @@ static void layoutPill(void) {
 static void updateInteractivity(void) {
     if (!_pill) return;
     BOOL visible = _focusSet && !_paused;
-    _pill.ignoresMouseEvents = !visible;
+    BOOL interactive = visible && (_pulsing || _idleOpacity > 0.0);
+    _pill.ignoresMouseEvents = !interactive;
 }
 
 static void pillBreathe(int gen, BOOL expand) {
@@ -344,7 +345,11 @@ static void endPulseNow(void) {
         [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
             ctx.duration = 0.2;
             _pill.animator.alphaValue = _idleOpacity;
+        } completionHandler:^{
+            updateInteractivity();
         }];
+    } else {
+        updateInteractivity();
     }
 }
 
@@ -832,6 +837,7 @@ void hudPulse(int rung) {
         if (!_pill || !_focusSet || _paused) return;
         _rung = rung < 0 ? 0 : rung;
         _pulsing = YES;
+        updateInteractivity();
         _pulseGen++;
         int gen = _pulseGen;
         _pulseShownAt = nowSec();
