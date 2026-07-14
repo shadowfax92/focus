@@ -124,14 +124,12 @@ static NSString *_focusText = nil;
 static double _sinceEpoch = 0;
 static BOOL _focusSet = NO;
 static BOOL _paused = NO;
-static BOOL _optHeld = NO;
 static BOOL _pulsing = NO;
 static int _rung = 0;
 static int _pulseGen = 0;
 static double _pulseShownAt = 0;
 // Screen y of the pill panel's top edge; text growth extends downward from it.
 static CGFloat _pillTop = -1;
-static NSTimer *_optTimer = nil;
 static NSTimer *_elapsedTimer = nil;
 
 static KeyPanel *_tk = nil;
@@ -308,15 +306,8 @@ static void layoutPill(void) {
 static void updateInteractivity(void) {
     if (!_pill) return;
     BOOL visible = _focusSet && !_paused;
-    BOOL interactive = visible && (_pulsing || _optHeld);
+    BOOL interactive = visible && (_pulsing || _idleOpacity > 0.0);
     _pill.ignoresMouseEvents = !interactive;
-    if (!visible || _pulsing) return; // the pulse owns alpha while active
-    CGFloat target = interactive ? 0.95 : _idleOpacity;
-    if (fabs(_pill.alphaValue - target) < 0.01) return;
-    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
-        ctx.duration = 0.2;
-        _pill.animator.alphaValue = target;
-    }];
 }
 
 static void pillBreathe(int gen, BOOL expand) {
@@ -350,7 +341,16 @@ static void endPulseNow(void) {
             layer.shadowOpacity = 0.4;
         }];
     }
-    updateInteractivity();
+    if (_pill && _focusSet && !_paused) {
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+            ctx.duration = 0.2;
+            _pill.animator.alphaValue = _idleOpacity;
+        } completionHandler:^{
+            updateInteractivity();
+        }];
+    } else {
+        updateInteractivity();
+    }
 }
 
 static void killPulseSilent(void) {
@@ -369,7 +369,7 @@ static void refreshPillVisibility(void) {
     if (!_pill) return;
     if (_focusSet && !_paused) {
         layoutPill();
-        if (!_pulsing) _pill.alphaValue = _optHeld ? 0.95 : _idleOpacity;
+        if (!_pulsing) _pill.alphaValue = _idleOpacity;
         [_pill orderFrontRegardless];
     } else {
         killPulseSilent();
@@ -379,8 +379,8 @@ static void refreshPillVisibility(void) {
 }
 
 static void pillAck(int kind) {
-    // Holding ⌥ makes the ambient pill draggable, but a click between
-    // reminders must not manufacture an acknowledgement or delay cadence.
+    // A click between reminders must not manufacture an acknowledgement or
+    // delay cadence, even though the ambient pill always accepts drag input.
     if (!_pulsing) return;
     double latency = (_pulsing && _pulseShownAt > 0) ? (nowSec() - _pulseShownAt) : 0;
     int rung = _rung;
@@ -775,15 +775,6 @@ static void endRetype(void) {
 // --- timers / init ----------------------------------------------------------
 
 static void startTimers(void) {
-    // ⌥ detection: +[NSEvent modifierFlags] reads current hardware state with
-    // no permissions; a global event monitor would prompt for Input Monitoring.
-    _optTimer = [[NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer *t) {
-        BOOL held = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
-        if (held != _optHeld) {
-            _optHeld = held;
-            updateInteractivity();
-        }
-    }] retain];
     _elapsedTimer = [[NSTimer scheduledTimerWithTimeInterval:60.0 repeats:YES block:^(NSTimer *t) {
         if (_focusSet && !_paused) layoutPill();
     }] retain];
@@ -846,13 +837,13 @@ void hudPulse(int rung) {
         if (!_pill || !_focusSet || _paused) return;
         _rung = rung < 0 ? 0 : rung;
         _pulsing = YES;
+        updateInteractivity();
         _pulseGen++;
         int gen = _pulseGen;
         _pulseShownAt = nowSec();
         GlowSpec g = glowForRung(_rung);
         _pillPanelView.layer.borderColor = [cyan(g.borderAlpha) CGColor];
         _pillPanelView.layer.borderWidth = g.borderWidth;
-        updateInteractivity();
         [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
             ctx.duration = 0.3;
             _pill.animator.alphaValue = 1.0;
@@ -937,7 +928,7 @@ static NSEvent *pillMouseEvent(NSEventType type, NSPoint p, NSEventModifierFlags
 
 void hudTestPillClick(int optionHeld) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!_pill || !_pill.isVisible) return;
+        if (!_pill || !_pill.isVisible || _pill.ignoresMouseEvents) return;
         NSPoint p = NSMakePoint(_pill.frame.size.width / 2, _pill.frame.size.height / 2);
         NSEventModifierFlags mods = optionHeld ? NSEventModifierFlagOption : 0;
         [_pill sendEvent:pillMouseEvent(NSEventTypeLeftMouseDown, p, mods, 1)];
@@ -947,13 +938,23 @@ void hudTestPillClick(int optionHeld) {
 
 void hudTestPillDrag(double dx, double dy) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!_pill || !_pill.isVisible) return;
+        if (!_pill || !_pill.isVisible || _pill.ignoresMouseEvents) return;
         NSPoint p = NSMakePoint(_pill.frame.size.width / 2, _pill.frame.size.height / 2);
         [_pill sendEvent:pillMouseEvent(NSEventTypeLeftMouseDown, p, 0, 3)];
         NSPoint moved = NSMakePoint(p.x + dx, p.y + dy);
         [_pill sendEvent:pillMouseEvent(NSEventTypeLeftMouseDragged, moved, 0, 4)];
         [_pill sendEvent:pillMouseEvent(NSEventTypeLeftMouseUp, moved, 0, 5)];
     });
+}
+
+double hudTestPillAlpha(void) {
+    __block double alpha = -1;
+    void (^readAlpha)(void) = ^{
+        if (_pill) alpha = _pill.alphaValue;
+    };
+    if ([NSThread isMainThread]) readAlpha();
+    else dispatch_sync(dispatch_get_main_queue(), readAlpha);
+    return alpha;
 }
 
 static void snapshotView(NSView *view, NSString *path) {

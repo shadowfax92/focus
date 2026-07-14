@@ -39,14 +39,10 @@ and takeover screen itself.
 - Always on top (`NSStatusWindowLevel + 1`), joins all Spaces, full-screen
   auxiliary, stationary.
 - Content: focus text + dim elapsed suffix `· 47m` (ticks once a minute).
-- Idle: opacity = `idle_opacity` (default 0.30), fully click-through
-  (`ignoresMouseEvents = YES`).
-- Interactive only: while pulsing, or while ⌥ is held (poll `+[NSEvent
-  modifierFlags]` on a timer — no permissions needed; global event monitors
-  would prompt for Input Monitoring).
-- Draggable when interactive; on drag end the new origin is reported to the
-  daemon and persisted. Config also supports presets: `top-center` (default),
-  `top-right`, `top-left`.
+- Idle: opacity = `idle_opacity` (default 0.30). Whenever the pill is visible,
+  it accepts mouse input and can be dragged directly with no modifier key.
+- On drag end the new origin is reported to the daemon and persisted. Config
+  also supports presets: `top-center` (default), `top-right`, `top-left`.
 - Hidden entirely when paused or when no focus is set.
 
 ### Pulse ladder (pulse style only)
@@ -60,8 +56,8 @@ and takeover screen itself.
 - After `escalate_after` (default 2) consecutive unacked pulses, the next
   reminder is the **takeover** instead of a pulse.
 - During an active pulse, clicking the pill acknowledges it: **left-click =
-  on_task**, **⌥-click = drifted**. Between pulses, holding ⌥ makes the ambient
-  pill draggable; a click without a drag is ignored.
+  on_task**, **⌥-click = drifted**. Between pulses, the ambient pill remains
+  directly draggable; a click without a drag is ignored.
 - Idle guard (both styles): if the user has been idle longer than
   `idle_pause_minutes` (default 5), ticks are skipped entirely — no rung
   growth, no screens at an empty desk. On return from an idle stretch ≥
