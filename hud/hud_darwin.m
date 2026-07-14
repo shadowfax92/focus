@@ -340,6 +340,12 @@ static void endPulseNow(void) {
             layer.shadowOpacity = 0.4;
         }];
     }
+    if (_pill && _focusSet && !_paused) {
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+            ctx.duration = 0.2;
+            _pill.animator.alphaValue = _idleOpacity;
+        }];
+    }
 }
 
 static void killPulseSilent(void) {
@@ -933,6 +939,16 @@ void hudTestPillDrag(double dx, double dy) {
         [_pill sendEvent:pillMouseEvent(NSEventTypeLeftMouseDragged, moved, 0, 4)];
         [_pill sendEvent:pillMouseEvent(NSEventTypeLeftMouseUp, moved, 0, 5)];
     });
+}
+
+double hudTestPillAlpha(void) {
+    __block double alpha = -1;
+    void (^readAlpha)(void) = ^{
+        if (_pill) alpha = _pill.alphaValue;
+    };
+    if ([NSThread isMainThread]) readAlpha();
+    else dispatch_sync(dispatch_get_main_queue(), readAlpha);
+    return alpha;
 }
 
 static void snapshotView(NSView *view, NSString *path) {

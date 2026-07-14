@@ -21,6 +21,7 @@ void hudTestKey(unsigned short keyCode, const char *chars);
 // ambient dragging never requires it.
 void hudTestPillClick(int optionHeld);
 void hudTestPillDrag(double dx, double dy);
+double hudTestPillAlpha(void);
 // Renders the pill/takeover view layers to PNGs (empty path = skip). Works
 // without Screen Recording permission, unlike screencapture; NSVisualEffectView
 // blur is a window-server composite and comes out dark, everything else is

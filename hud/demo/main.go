@@ -9,6 +9,7 @@ package main
 extern void hudTestKey(unsigned short keyCode, const char *chars);
 extern void hudTestPillClick(int optionHeld);
 extern void hudTestPillDrag(double dx, double dy);
+extern double hudTestPillAlpha(void);
 extern void hudTestSnapshot(const char *pillPath, const char *takeoverPath);
 */
 import "C"
@@ -46,7 +47,7 @@ func main() {
 	posX := flag.Float64("x", 0, "pill x for -pos custom")
 	posY := flag.Float64("y", 0, "pill y for -pos custom")
 	pause := flag.Duration("pause-test", 0, "SetPaused(true) after this delay, resume 2s later (0 = off)")
-	auto := flag.String("auto", "", "comma-separated synthetic input: click|optclick (pulse acks)|drag (no modifier)|enter|d|n|f|esc|type:<text>")
+	auto := flag.String("auto", "", "comma-separated synthetic input: click|optclick (pulse acks)|drag (no modifier)|state|enter|d|n|f|esc|type:<text>")
 	snap := flag.String("snap", "", "write <prefix>-pill.png / <prefix>-takeover.png at -snap-delay")
 	snapDelay := flag.Duration("snap-delay", 4*time.Second, "delay before -snap renders")
 	autoDelay := flag.Duration("auto-delay", 2*time.Second, "wait after the last show step before -auto runs")
@@ -163,6 +164,8 @@ func runAutoStep(step string) {
 		C.hudTestPillClick(1)
 	case step == "drag":
 		C.hudTestPillDrag(60, -80)
+	case step == "state":
+		fmt.Printf("[demo] PillState alpha=%.2f\n", float64(C.hudTestPillAlpha()))
 	case step == "enter":
 		sendKey(36, "\r")
 	case step == "d":
