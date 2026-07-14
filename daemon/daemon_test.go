@@ -61,6 +61,14 @@ func recordPresentedFocus(d *Daemon) *[]string {
 	return &texts
 }
 
+func recordPresentedPause(d *Daemon) *[]bool {
+	states := []bool{}
+	d.setPausedHUD = func(paused bool) {
+		states = append(states, paused)
+	}
+	return &states
+}
+
 func TestHandleSetAckPauseResumeDoneRoundTrip(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
 	d := testDaemon(t, &now, config.StylePulse)
@@ -427,5 +435,31 @@ func TestDoneAckWhilePausedClearsPause(t *testing.T) {
 	}
 	if d.state.PausedUntil != nil {
 		t.Fatalf("done ack left a dangling pause: %v", d.state.PausedUntil)
+	}
+}
+
+func TestDoneWhilePausedUnpausesNextOverlay(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	presented := recordPresentedFocus(d)
+	paused := recordPresentedPause(d)
+
+	requests := []ipc.Request{
+		{Action: "set", Text: "first focus"},
+		{Action: "pause", Duration: "30m"},
+		{Action: "done"},
+		{Action: "set", Text: "next focus"},
+	}
+	for _, request := range requests {
+		if response := d.Handle(request); !response.OK {
+			t.Fatalf("%s failed: %s", request.Action, response.Error)
+		}
+	}
+
+	if len(*presented) != 2 || (*presented)[0] != "first focus" || (*presented)[1] != "next focus" {
+		t.Fatalf("presented focus = %v, want both ambient overlays", *presented)
+	}
+	if len(*paused) != 2 || !(*paused)[0] || (*paused)[1] {
+		t.Fatalf("presented pause state = %v, want pause then explicit unpause on clear", *paused)
 	}
 }

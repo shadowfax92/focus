@@ -59,8 +59,9 @@ and takeover screen itself.
   pulse; any ack resets rung to 0.
 - After `escalate_after` (default 2) consecutive unacked pulses, the next
   reminder is the **takeover** instead of a pulse.
-- Acking on the pill while it is interactive: **left-click = on_task**,
-  **⌥-click = drifted**.
+- During an active pulse, clicking the pill acknowledges it: **left-click =
+  on_task**, **⌥-click = drifted**. Between pulses, holding ⌥ makes the ambient
+  pill draggable; a click without a drag is ignored.
 - Idle guard (both styles): if the user has been idle longer than
   `idle_pause_minutes` (default 5), ticks are skipped entirely — no rung
   growth, no screens at an empty desk. On return from an idle stretch ≥
@@ -78,7 +79,8 @@ and takeover screen itself.
   or `2nd escalation today · yesterday: 5 · 43m on task` (pulse escalation).
 - Breathing gate: a breathing-circle animation for `breathing_gate_seconds`
   (default 3, 0 = off) before the ack keys arm. Key hints appear after the
-  gate. Routine check-ins always pass gate 0 — keys arm immediately.
+  gate. Routine check-ins always pass gate 0, skip the breathing circle, and
+  arm after the 2s fade-in completes.
 - Keyboard-first; the panel becomes key and **swallows all keystrokes**:
   - `Enter` → on_task ("still on it")
   - `D` → drifted

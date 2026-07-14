@@ -16,17 +16,18 @@ import (
 )
 
 type Daemon struct {
-	mu          sync.Mutex
-	cfg         config.Config
-	events      *store.Store
-	statePath   string
-	state       State
-	machine     *Machine
-	now         func() time.Time
-	idle        func() float64
-	nextTick    time.Time
-	idleGuarded bool
-	setFocusHUD func(string, time.Time)
+	mu           sync.Mutex
+	cfg          config.Config
+	events       *store.Store
+	statePath    string
+	state        State
+	machine      *Machine
+	now          func() time.Time
+	idle         func() float64
+	nextTick     time.Time
+	idleGuarded  bool
+	setFocusHUD  func(string, time.Time)
+	setPausedHUD func(bool)
 }
 
 func New(cfg config.Config) (*Daemon, error) {
@@ -110,6 +111,14 @@ func (d *Daemon) presentFocus(text string, since time.Time) {
 	hud.SetFocus(text, since)
 }
 
+func (d *Daemon) presentPaused(paused bool) {
+	if d.setPausedHUD != nil {
+		d.setPausedHUD(paused)
+		return
+	}
+	hud.SetPaused(paused)
+}
+
 // reminderLocked is the immediate reminder fired outside the tick cadence
 // (welcome-back after idle, or on-set in pulse style).
 func (d *Daemon) reminderLocked(now time.Time) Action {
@@ -136,7 +145,7 @@ func (d *Daemon) restoreHUD() {
 	}
 	d.presentFocus(d.state.FocusText, d.state.SetAt)
 	paused := d.isPaused(now)
-	hud.SetPaused(paused)
+	d.presentPaused(paused)
 	if !paused && d.machine.State().InTakeover {
 		hud.ShowTakeover(d.takeoverContentLocked(now))
 	}
@@ -265,7 +274,7 @@ func (d *Daemon) set(text string) error {
 	hud.DismissTakeover()
 	d.presentFocus(text, now)
 	if d.isPaused(now) {
-		hud.SetPaused(true)
+		d.presentPaused(true)
 		return d.saveLocked()
 	}
 	if d.directCheckins() {
@@ -299,6 +308,7 @@ func (d *Daemon) clearFocusLocked() error {
 	d.machine.Reset()
 	hud.DismissTakeover()
 	hud.ClearFocus()
+	d.presentPaused(false)
 	return d.saveLocked()
 }
 
@@ -312,7 +322,7 @@ func (d *Daemon) pause(duration time.Duration) error {
 		return err
 	}
 	hud.DismissTakeover()
-	hud.SetPaused(true)
+	d.presentPaused(true)
 	return d.saveLocked()
 }
 
@@ -331,7 +341,7 @@ func (d *Daemon) resumeLocked(now time.Time) error {
 	if err := d.appendLocked(store.Event{TS: now, Type: "resume"}); err != nil {
 		return err
 	}
-	hud.SetPaused(false)
+	d.presentPaused(false)
 	if d.state.FocusText != "" {
 		d.presentFocus(d.state.FocusText, d.state.SetAt)
 		if d.machine.State().InTakeover {
@@ -451,10 +461,10 @@ func (d *Daemon) performLocked(action Action, now time.Time) error {
 }
 
 // takeoverContentLocked builds the screen for whichever reminder the current
-// style shows: a routine check-in (rung 0, keys armed immediately — a
-// breathing gate 4×/hour would be pure friction) or a pulse-mode escalation
-// (explicit rung, configured gate). Called after the checkin/escalation event
-// is appended, so today's count includes the one being shown.
+// style shows: a routine check-in (rung 0, no breathing gate; keys arm after
+// the HUD fade-in) or a pulse-mode escalation (explicit rung, configured
+// gate). Called after the checkin/escalation event is appended, so today's
+// count includes the one being shown.
 func (d *Daemon) takeoverContentLocked(now time.Time) hud.TakeoverContent {
 	quote := ""
 	if len(d.cfg.Quotes) > 0 {
