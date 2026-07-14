@@ -37,8 +37,6 @@ This builds `~/Applications/Focus.app`, symlinks the CLI into `$GOPATH/bin`, and
 ```sh
 focus set "ship the onboarding PR"
 focus status
-focus ack                    # still on task
-focus ack --drifted          # count a distraction
 focus pause 45m              # meeting mode
 focus resume
 focus done
@@ -88,7 +86,7 @@ The ambient pill remains visible between check-ins. While a check-in is up, furt
 
 ```yaml
 reminder_style: fullscreen   # fullscreen (default) | pulse
-interval: 15m                # how often the check-in appears (15m, 30m, …)
+interval: 15m                # reminder cadence (15m, 30m, …)
 idle_pause_minutes: 5
 idle_opacity: 0.3             # ambient pill opacity in either style
 position:
@@ -104,7 +102,7 @@ escalate_after: 2
 breathing_gate_seconds: 3    # escalation takeovers; check-ins arm when faded in
 ```
 
-`interval` uses Go-style durations. Position presets are `top-center`, `top-right`, `top-left`, and `custom`; dragging the interactive pill persists a custom position.
+`interval` uses Go-style durations. It drives direct check-ins in fullscreen style and pulse-ladder ticks in pulse style. Position presets are `top-center`, `top-right`, `top-left`, and `custom`; dragging the interactive pill persists a custom position.
 
 ## Local data
 
