@@ -3,3 +3,4 @@ focus
 dist/
 .DS_Store
 .grove/
+.llm/

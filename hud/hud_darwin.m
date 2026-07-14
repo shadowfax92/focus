@@ -379,6 +379,9 @@ static void refreshPillVisibility(void) {
 }
 
 static void pillAck(int kind) {
+    // Holding ⌥ makes the ambient pill draggable, but a click between
+    // reminders must not manufacture an acknowledgement or delay cadence.
+    if (!_pulsing) return;
     double latency = (_pulsing && _pulseShownAt > 0) ? (nowSec() - _pulseShownAt) : 0;
     int rung = _rung;
     endPulseNow();

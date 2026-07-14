@@ -53,6 +53,22 @@ func wantEventTypes(t *testing.T, d *Daemon, want []string) {
 	}
 }
 
+func recordPresentedFocus(d *Daemon) *[]string {
+	texts := []string{}
+	d.setFocusHUD = func(text string, _ time.Time) {
+		texts = append(texts, text)
+	}
+	return &texts
+}
+
+func recordPresentedPause(d *Daemon) *[]bool {
+	states := []bool{}
+	d.setPausedHUD = func(paused bool) {
+		states = append(states, paused)
+	}
+	return &states
+}
+
 func TestHandleSetAckPauseResumeDoneRoundTrip(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
 	d := testDaemon(t, &now, config.StylePulse)
@@ -154,11 +170,16 @@ func TestResumePreservesTakeoverState(t *testing.T) {
 func TestFullscreenTicksShowCheckinsNotEscalations(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
 	d := testDaemon(t, &now, config.StyleFullscreen)
+	presented := recordPresentedFocus(d)
 
 	if response := d.Handle(ipc.Request{Action: "set", Text: "ship it"}); !response.OK {
 		t.Fatal(response.Error)
 	}
-	// set must not fire an instant screen; the first check-in is a full interval out.
+	if len(*presented) != 1 || (*presented)[0] != "ship it" {
+		t.Fatalf("presented focus = %v, want ambient pill for ship it", *presented)
+	}
+	// The pill appears immediately, but the first full-screen check-in remains
+	// a full configured interval out.
 	wantEventTypes(t, d, []string{"set"})
 	if d.machine.State().InTakeover {
 		t.Fatal("set opened a takeover immediately")
@@ -199,9 +220,34 @@ func TestFullscreenTicksShowCheckinsNotEscalations(t *testing.T) {
 	}
 }
 
+func TestFullscreenAmbientAckDoesNotDelayCheckin(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	recordPresentedFocus(d)
+
+	if response := d.Handle(ipc.Request{Action: "set", Text: "ship it"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	scheduled := d.nextTick
+	if response := d.Handle(ipc.Request{Action: "ack", Kind: "drifted"}); response.OK {
+		t.Fatal("ambient pill acknowledgement was accepted without a pending reminder")
+	}
+	wantEventTypes(t, d, []string{"set"})
+	if !d.nextTick.Equal(scheduled) {
+		t.Fatalf("ambient acknowledgement moved next tick from %s to %s", scheduled, d.nextTick)
+	}
+
+	now = scheduled
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	wantEventTypes(t, d, []string{"set", "checkin"})
+}
+
 func TestFullscreenDoneAckSetsNextFocus(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
 	d := testDaemon(t, &now, config.StyleFullscreen)
+	presented := recordPresentedFocus(d)
 
 	if response := d.Handle(ipc.Request{Action: "set", Text: "ship it"}); !response.OK {
 		t.Fatal(response.Error)
@@ -229,6 +275,31 @@ func TestFullscreenDoneAckSetsNextFocus(t *testing.T) {
 	}
 	if d.machine.State().InTakeover {
 		t.Fatal("takeover state not cleared by done ack")
+	}
+	if len(*presented) != 2 || (*presented)[0] != "ship it" || (*presented)[1] != "write the follow-up" {
+		t.Fatalf("presented focus = %v, want current then next ambient pill text", *presented)
+	}
+}
+
+func TestFullscreenRestoresAndResumesAmbientOverlay(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	d.state.FocusText = "persisted focus"
+	d.state.SetAt = now.Add(-time.Hour)
+	presented := recordPresentedFocus(d)
+
+	d.restoreHUD()
+	if len(*presented) != 1 || (*presented)[0] != "persisted focus" {
+		t.Fatalf("restore presented focus = %v, want persisted ambient pill", *presented)
+	}
+
+	until := now.Add(time.Minute)
+	d.state.PausedUntil = &until
+	if err := d.resume(); err != nil {
+		t.Fatal(err)
+	}
+	if len(*presented) != 2 || (*presented)[1] != "persisted focus" {
+		t.Fatalf("resume presented focus = %v, want persisted ambient pill again", *presented)
 	}
 }
 
@@ -352,6 +423,10 @@ func TestDoneAckWhilePausedClearsPause(t *testing.T) {
 	if response := d.Handle(ipc.Request{Action: "set", Text: "ship it"}); !response.OK {
 		t.Fatal(response.Error)
 	}
+	now = now.Add(d.cfg.Interval)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
 	if response := d.Handle(ipc.Request{Action: "pause", Duration: "30m"}); !response.OK {
 		t.Fatal(response.Error)
 	}
@@ -360,5 +435,31 @@ func TestDoneAckWhilePausedClearsPause(t *testing.T) {
 	}
 	if d.state.PausedUntil != nil {
 		t.Fatalf("done ack left a dangling pause: %v", d.state.PausedUntil)
+	}
+}
+
+func TestDoneWhilePausedUnpausesNextOverlay(t *testing.T) {
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	presented := recordPresentedFocus(d)
+	paused := recordPresentedPause(d)
+
+	requests := []ipc.Request{
+		{Action: "set", Text: "first focus"},
+		{Action: "pause", Duration: "30m"},
+		{Action: "done"},
+		{Action: "set", Text: "next focus"},
+	}
+	for _, request := range requests {
+		if response := d.Handle(request); !response.OK {
+			t.Fatalf("%s failed: %s", request.Action, response.Error)
+		}
+	}
+
+	if len(*presented) != 2 || (*presented)[0] != "first focus" || (*presented)[1] != "next focus" {
+		t.Fatalf("presented focus = %v, want both ambient overlays", *presented)
+	}
+	if len(*paused) != 2 || !(*paused)[0] || (*paused)[1] {
+		t.Fatalf("presented pause state = %v, want pause then explicit unpause on clear", *paused)
 	}
 }
