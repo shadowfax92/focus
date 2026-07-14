@@ -1,36 +1,36 @@
 # focus — design
 
-Nothing on screen between reminders; every `interval` a full-screen check-in
-asks whether you're still on the main thing — and honest day-over-day
-distraction stats. The v1 ambient pill + escalation ladder survives as an
-opt-in style.
+One ambient focus pill keeps the main thing visible; every `interval` a
+full-screen check-in asks whether you're still on it — with honest
+day-over-day distraction stats. The v1 pulse escalation ladder survives as an
+opt-in cadence.
 
 Deliberately **separate from mac-notify** (that stays a pure notification queue).
 This tool is a persistent, stateful HUD with its own daemon, socket, and app bundle.
 
 ## Reminder styles — `reminder_style`
 
-- **`fullscreen` (default).** The pill is never shown; nothing is visible
-  between reminders. Every `interval` (15m/30m — user's call) the full-screen
-  check-in appears directly: no pulse rungs, no `escalate_after` gating — the
-  screen IS the reminder. While one is up, further ticks are absorbed (never a
-  second screen, never rung growth — an idle stretch spent staring at one
-  doesn't re-fire it either). Routine check-ins skip the breathing circle
+- **`fullscreen` (default).** The ambient pill stays visible at
+  `idle_opacity`. Every `interval` (15m/30m — user's call) the full-screen
+  check-in appears directly: no pulse rungs, no `escalate_after` gating. While
+  one is up, further ticks are absorbed (never a second screen, never rung
+  growth — an idle stretch spent staring at one doesn't re-fire it either).
+  Routine check-ins skip the breathing circle
   (`Gate: 0`): a gate 4×/hour would be pure friction — `breathing_gate_seconds`
   applies to pulse-mode escalations only. The keys still arm only once the 2s
   fade-in completes, so in-flight typing can never ack a screen that isn't
   visible yet. Setting a focus does **not** fire an instant screen; the first
   check-in comes a full interval later.
-- **`pulse`.** The v1 model, unchanged: ambient pill at `idle_opacity`, glow
-  pulses climbing rungs each unacked tick, takeover after `escalate_after`
-  ignored pulses.
+- **`pulse`.** The v1 cadence, unchanged: the same ambient pill shows glow
+  pulses climbing rungs each unacked tick, with a takeover after
+  `escalate_after` ignored pulses.
 
-Both styles share the idle guard, pause/resume, the ack vocabulary, and the
-takeover screen itself.
+Both styles share the ambient pill, idle guard, pause/resume, ack vocabulary,
+and takeover screen itself.
 
 ## UX spec
 
-### Pill (pulse style only)
+### Pill (both styles)
 
 - Dark rounded floating panel. Visual language lifted from
   `/Users/shadowfax/code/clis/mac-notify/menubar/notify_darwin.m`
@@ -152,9 +152,9 @@ interval: 15m
 pulse_seconds: 8             # pulse style only
 escalate_after: 2            # pulse style only
 breathing_gate_seconds: 3    # pulse-style escalations; check-ins arm on fade-in
-idle_opacity: 0.30           # pulse style only (fullscreen never shows the pill; 0 is honored)
+idle_opacity: 0.30           # ambient pill in both styles; 0 is honored
 idle_pause_minutes: 5
-position:                    # pulse style only
+position:
   preset: top-center   # top-center | top-right | top-left | custom
   x: 0                 # used when preset: custom (saved on drag)
   y: 0
@@ -194,8 +194,8 @@ hud/               Go API + objc implementation
 Makefile, plist    build, Focus.app (LSUIElement), launchd
 ```
 
-- In fullscreen style the daemon never drives the pill (`SetFocus`,
-  `ClearFocus`, `Pulse` stay silent); the takeover carries its own text.
+- The daemon drives pill focus state in both reminder styles. In fullscreen
+  style it skips `Pulse` and sends each due interval directly to the takeover.
 - `daemon` runs policy in goroutines and calls `hud.Run` **last, on the main
   goroutine** (main.go already locks it to the OS thread).
 - go.mod is pinned (cobra, yaml.v3, fatih/color); no new deps.
@@ -210,10 +210,10 @@ go build ./... && go vet ./... && go test ./...
 ```
 
 - Headless (CGO_ENABLED=0 stub build, short `$HOME` under /tmp): short
-  `interval` test config → `focus daemon` in foreground → `set` → `checkin`
-  events tick (one per interval, absorbed while a screen is up) → drifted ack
-  is the only thing that moves distractions → done ack logs done + set →
-  `focus stats` renders.
-- Visual: `go run ./hud/demo -checkin -auto "f,type:next thing,enter"`
+  `interval` test config → `focus daemon` in foreground → `set_focus` stub →
+  `checkin` events tick (one per interval, absorbed while a screen is up) →
+  drifted ack is the only thing that moves distractions → done ack logs done +
+  set → `focus stats` renders.
+- Visual: `go run ./hud/demo -pill -checkin -auto "f,type:next thing,enter"`
   (or `-pill -pulse 2 -takeover` for pulse style) with `-snap` self-snapshots —
   `screencapture` from agent shells silently omits app windows.

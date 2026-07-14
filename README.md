@@ -2,19 +2,20 @@
 
 # 🎯 focus
 
-**A full-screen focus check-in for macOS.**
+**A focus overlay with full-screen check-ins for macOS.**
 
-*Nothing on screen until it's time — then the whole screen asks whether you're still on the main thing.*
+*Keep the main thing visible — and check in on it, full-screen, on your cadence.*
 
 </div>
 
-`focus` keeps your highest-priority task honest without another notification fighting for a corner of your eye. Nothing is visible between reminders; on a cadence you pick (15m, 30m…), a full-screen check-in dissolves your work behind a blur until you answer. Every check-in and response is logged locally so distraction trends come from what actually happened.
+`focus` keeps your highest-priority task visible in a quiet ambient pill. On a cadence you pick (15m, 30m…), a full-screen check-in dissolves your work behind a blur until you answer. Every check-in and response is logged locally so distraction trends come from what actually happened.
 
+- **Always-visible priority** — a subtle, click-through HUD follows you across Spaces
 - **Full-screen check-ins** — the reminder you can't not notice, on your `interval`
 - **One-keystroke answers** — `⏎` still on it, `D` drifted, `N` change focus, `F` done (and type what's next right there)
 - **Idle-aware** — an empty desk never gets a check-in; returning does
 - **Honest local stats** — day-over-day and week-over-week distraction charts from append-only JSONL; routine check-ins never count as distractions
-- **Pulse style (optional)** — the v1 ambient glow pill + escalation ladder, one config key away
+- **Pulse style (optional)** — replace every-interval check-ins with the v1 glow-pulse escalation ladder
 - **No Dock icon** — the daemon runs as an `LSUIElement` app managed by launchd
 
 ---
@@ -75,11 +76,11 @@ Every `interval` the screen blurs over and shows your focus, a quote, and four k
 | `N` | Change the focus (edit it inline) |
 | `F` | Done — logs completion, then type the next focus right there (`⏎` starts it; `⏎` on an empty field means nothing next and the screen stays quiet until the next `focus set`; `⎋` backs out) |
 
-While a check-in is up, further intervals are absorbed — there is never a second screen stacked on the first. Routine check-ins are *not* distractions; only `D` moves the metric. Fewer is better, so negative changes render green.
+The ambient pill remains visible between check-ins. While a check-in is up, further intervals are absorbed — there is never a second screen stacked on the first. Routine check-ins are *not* distractions; only `D` moves the metric. Fewer is better, so negative changes render green.
 
 ### Pulse style
 
-`reminder_style: pulse` restores the v1 model: an ambient glow pill at `idle_opacity`, brightening pulses each unacknowledged reminder, and the full-screen takeover only after `escalate_after` ignored pulses (a shown takeover then also counts as a distraction). Click the pill to acknowledge — left-click on task, ⌥-click drifted.
+`reminder_style: pulse` keeps the ambient pill but replaces direct check-ins with the v1 ladder: brightening pulses each unacknowledged reminder, and the full-screen takeover only after `escalate_after` ignored pulses (a shown takeover then also counts as a distraction). Click the pill to acknowledge — left-click on task, ⌥-click drifted.
 
 ## Config
 
@@ -89,18 +90,18 @@ While a check-in is up, further intervals are absorbed — there is never a seco
 reminder_style: fullscreen   # fullscreen (default) | pulse
 interval: 15m                # how often the check-in appears (15m, 30m, …)
 idle_pause_minutes: 5
-quotes:
-  - The main thing is to keep the main thing the main thing.
-
-# pulse style only:
-pulse_seconds: 8
-escalate_after: 2
-breathing_gate_seconds: 3    # escalation takeovers; check-ins arm when faded in
-idle_opacity: 0.3
+idle_opacity: 0.3             # ambient pill opacity in either style
 position:
   preset: top-center
   x: 0
   y: 0
+quotes:
+  - The main thing is to keep the main thing the main thing.
+
+# pulse reminder style only:
+pulse_seconds: 8
+escalate_after: 2
+breathing_gate_seconds: 3    # escalation takeovers; check-ins arm when faded in
 ```
 
 `interval` uses Go-style durations. Position presets are `top-center`, `top-right`, `top-left`, and `custom`; dragging the interactive pill persists a custom position.
