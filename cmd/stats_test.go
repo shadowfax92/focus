@@ -82,9 +82,10 @@ func TestDetailedTodayJSONKeepsSummaryAndAddsTimeline(t *testing.T) {
 		},
 		Yesterday: store.DayStats{Date: "2026-07-09"},
 	}
-	timeline := []store.TimelineEvent{{
-		TS: time.Date(2026, 7, 10, 9, 0, 0, 0, loc), Type: "set", Focus: "Build stats",
-	}}
+	timeline := []store.TimelineEvent{
+		{TS: time.Date(2026, 7, 10, 8, 0, 0, 0, loc), Type: "escalation"},
+		{TS: time.Date(2026, 7, 10, 9, 0, 0, 0, loc), Type: "set", Focus: "Build stats"},
+	}
 	var output strings.Builder
 	if err := writeJSON(&output, detailedTodayStats{TodayStats: stats, Timeline: timeline}); err != nil {
 		t.Fatal(err)
@@ -97,10 +98,14 @@ func TestDetailedTodayJSONKeepsSummaryAndAddsTimeline(t *testing.T) {
 		t.Fatalf("summary fields missing from detailed JSON: %s", output.String())
 	}
 	events, ok := got["timeline"].([]any)
-	if !ok || len(events) != 1 {
+	if !ok || len(events) != 2 {
 		t.Fatalf("timeline missing from detailed JSON: %s", output.String())
 	}
-	event := events[0].(map[string]any)
+	unattributed := events[0].(map[string]any)
+	if focus, ok := unattributed["focus"]; !ok || focus != "" {
+		t.Fatalf("unattributed timeline event = %+v, want explicit empty focus", unattributed)
+	}
+	event := events[1].(map[string]any)
 	if event["focus"] != "Build stats" || !strings.HasSuffix(event["ts"].(string), "-07:00") {
 		t.Fatalf("timeline event = %+v, want structured focus and local timestamp", event)
 	}

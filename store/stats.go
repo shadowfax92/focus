@@ -34,7 +34,7 @@ type TimelineEvent struct {
 	TS       time.Time `json:"ts"`
 	Type     string    `json:"type"`
 	Kind     string    `json:"kind,omitempty"`
-	Focus    string    `json:"focus,omitempty"`
+	Focus    string    `json:"focus"`
 	Rung     *int      `json:"rung,omitempty"`
 	LatencyS *float64  `json:"latency_s,omitempty"`
 }
