@@ -53,7 +53,8 @@ focus stats
 | `focus pause <duration>` | Pause reminders, using Go durations such as `45m` or `2h` |
 | `focus resume` | Resume the HUD and reminder timer |
 | `focus ack [--drifted]` | Acknowledge the current reminder from the CLI |
-| `focus stats` | Compare today with yesterday |
+| `focus stats` | Compare today with yesterday and rank distractions by focus |
+| `focus stats --detailed` / `focus stats -d` | Add today's chronological event timeline in local time |
 | `focus stats --days N` | Render a daily distraction bar chart |
 | `focus stats weeks` | Show week-over-week trends and sparklines |
 | `focus quotes add\|list\|rm` | Manage takeover quotes |
@@ -61,7 +62,9 @@ focus stats
 | `focus install` / `uninstall` | Manage the app bundle and LaunchAgent |
 | `focus daemon` | Run the daemon in the foreground for development |
 
-All stats views accept `--json`.
+The default stats view keeps the headline metrics compact, then lists each focus used today with its distraction count, highest first. Repeated exact focus text is combined; activity from legacy history before its first `set` appears as `(unattributed)` rather than being guessed.
+
+`--detailed` / `-d` adds today's full event timeline with local, human-readable timestamps and the focus active for each event. It is intentionally limited to today's view and cannot be combined with `--days` or `weeks`. All stats views accept `--json`; detailed JSON preserves the normal summary fields and adds a structured `timeline` array.
 
 ## The check-in screen
 

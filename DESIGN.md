@@ -117,13 +117,20 @@ when the screen appeared) → `done` → `set` when a next focus was typed.
 Everything is derived at read time from the JSONL; no aggregate state.
 
 - `focus stats` — today vs yesterday: distractions, check-ins, pulses, acks,
-  avg ack latency, DoD %. **Down is good**: fewer distractions renders green.
+  avg ack latency, DoD %, followed by focus text ranked by its distraction
+  count. Exact repeated focus text combines; legacy events without focus
+  context remain explicitly unattributed. **Down is good**: fewer
+  distractions renders green.
+- `focus stats --detailed` / `-d` — append today's complete event timeline in
+  stable chronological order, with local 12-hour timestamps, readable labels,
+  active focus context, and rung/latency metadata. Detailed mode is today-only.
 - `focus stats --days N` — vertical bar chart of distractions/day, exactly the
   gh-stats look (`/Users/shadowfax/code/clis/gh-stats/render/render.go` —
   `VerticalBars`, `Sparkline`, `FormatPctInt`, fatih/color).
 - `focus stats weeks` — WoW comparison rows + per-week sparklines + streak line
   ("3 days improving").
-- `--json` on all stats views.
+- `--json` on all stats views. Day objects add structured focus summaries;
+  detailed today JSON keeps the regular top-level fields and adds `timeline`.
 
 ## CLI
 
@@ -135,7 +142,9 @@ focus status                         # current focus + elapsed + rung + paused s
 focus pause 45m                      # meeting mode
 focus resume
 focus ack [--drifted]                # ack from the CLI (default on_task)
-focus stats [--days N | weeks] [--json]
+focus stats [--detailed | -d] [--json]
+focus stats --days N [--json]
+focus stats weeks [--json]
 focus quotes add "..." | list | rm <n>
 focus config                         # print resolved config
 focus install | uninstall            # app bundle + launchd agent

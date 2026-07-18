@@ -6,7 +6,20 @@ import (
 )
 
 type DayStats struct {
-	Date           string  `json:"date"`
+	Date           string       `json:"date"`
+	Distractions   int          `json:"distractions"`
+	Pulses         int          `json:"pulses"`
+	Checkins       int          `json:"checkins"`
+	Escalations    int          `json:"escalations"`
+	Acks           int          `json:"acks"`
+	AvgAckLatencyS float64      `json:"avg_ack_latency_s"`
+	Focuses        []FocusStats `json:"focuses,omitempty"`
+	latencyTotal   float64
+	latencyCount   int
+}
+
+type FocusStats struct {
+	Focus          string  `json:"focus"`
 	Distractions   int     `json:"distractions"`
 	Pulses         int     `json:"pulses"`
 	Checkins       int     `json:"checkins"`
@@ -15,6 +28,15 @@ type DayStats struct {
 	AvgAckLatencyS float64 `json:"avg_ack_latency_s"`
 	latencyTotal   float64
 	latencyCount   int
+}
+
+type TimelineEvent struct {
+	TS       time.Time `json:"ts"`
+	Type     string    `json:"type"`
+	Kind     string    `json:"kind,omitempty"`
+	Focus    string    `json:"focus"`
+	Rung     *int      `json:"rung,omitempty"`
+	LatencyS *float64  `json:"latency_s,omitempty"`
 }
 
 type TodayStats struct {
@@ -37,6 +59,7 @@ type WeeksStats struct {
 	ImprovingRun int       `json:"improving_streak_days"`
 }
 
+// DeriveDays builds local-day aggregates and focus attribution from event history.
 func DeriveDays(events []Event, end time.Time, days int, loc *time.Location) []DayStats {
 	if days < 1 {
 		return nil
@@ -44,47 +67,134 @@ func DeriveDays(events []Event, end time.Time, days int, loc *time.Location) []D
 	end = dayStart(end.In(loc))
 	start := end.AddDate(0, 0, -(days - 1))
 	byDate := make(map[string]*DayStats, days)
+	focusIndexes := make(map[string]map[string]int, days)
 	result := make([]DayStats, days)
 	for i := range days {
 		date := start.AddDate(0, 0, i).Format("2006-01-02")
 		result[i].Date = date
 		byDate[date] = &result[i]
+		focusIndexes[date] = make(map[string]int)
 	}
-	for _, event := range events {
+	for _, attributed := range attributeEvents(events) {
+		event := attributed.Event
 		date := event.TS.In(loc).Format("2006-01-02")
 		day := byDate[date]
 		if day == nil {
 			continue
 		}
+		var focus *FocusStats
+		if contributesFocusContext(event.Type) {
+			indexes := focusIndexes[date]
+			index, ok := indexes[attributed.Focus]
+			if !ok {
+				index = len(day.Focuses)
+				indexes[attributed.Focus] = index
+				day.Focuses = append(day.Focuses, FocusStats{Focus: attributed.Focus})
+			}
+			focus = &day.Focuses[index]
+		}
 		switch event.Type {
 		case "pulse":
 			day.Pulses++
+			focus.Pulses++
 		// Routine fullscreen check-ins are reminders, not distractions —
 		// only a drifted ack (or a pulse-mode escalation) moves the metric.
 		case "checkin":
 			day.Checkins++
+			focus.Checkins++
 		case "ack":
 			day.Acks++
+			focus.Acks++
 			if event.Kind == "drifted" {
 				day.Distractions++
+				focus.Distractions++
 			}
 			if event.LatencyS != nil {
 				day.latencyTotal += *event.LatencyS
 				day.latencyCount++
+				focus.latencyTotal += *event.LatencyS
+				focus.latencyCount++
 			}
 		case "escalation":
 			day.Escalations++
 			day.Distractions++
+			focus.Escalations++
+			focus.Distractions++
 		}
 	}
 	for i := range result {
-		if result[i].latencyCount > 0 {
-			result[i].AvgAckLatencyS = result[i].latencyTotal / float64(result[i].latencyCount)
+		day := &result[i]
+		if day.latencyCount > 0 {
+			day.AvgAckLatencyS = day.latencyTotal / float64(day.latencyCount)
 		}
-		result[i].latencyCount = 0
-		result[i].latencyTotal = 0
+		day.latencyCount = 0
+		day.latencyTotal = 0
+		for j := range day.Focuses {
+			focus := &day.Focuses[j]
+			if focus.latencyCount > 0 {
+				focus.AvgAckLatencyS = focus.latencyTotal / float64(focus.latencyCount)
+			}
+			focus.latencyCount = 0
+			focus.latencyTotal = 0
+		}
+		sort.SliceStable(day.Focuses, func(a, b int) bool {
+			return day.Focuses[a].Distractions > day.Focuses[b].Distractions
+		})
 	}
 	return result
+}
+
+// DeriveTimeline returns attributed events in stable chronological order and local time.
+func DeriveTimeline(events []Event, start, end time.Time, loc *time.Location) []TimelineEvent {
+	result := make([]TimelineEvent, 0)
+	for _, attributed := range attributeEvents(events) {
+		if attributed.Event.TS.Before(start) || !attributed.Event.TS.Before(end) {
+			continue
+		}
+		result = append(result, TimelineEvent{
+			TS:       attributed.Event.TS.In(loc),
+			Type:     attributed.Event.Type,
+			Kind:     attributed.Event.Kind,
+			Focus:    attributed.Focus,
+			Rung:     attributed.Event.Rung,
+			LatencyS: attributed.Event.LatencyS,
+		})
+	}
+	return result
+}
+
+type attributedEvent struct {
+	Event Event
+	Focus string
+}
+
+// attributeEvents reconstructs focus context without mutating append-order history.
+func attributeEvents(events []Event) []attributedEvent {
+	ordered := append([]Event(nil), events...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].TS.Before(ordered[j].TS)
+	})
+	result := make([]attributedEvent, 0, len(ordered))
+	activeFocus := ""
+	for _, event := range ordered {
+		if event.Type == "set" {
+			activeFocus = event.Text
+		}
+		result = append(result, attributedEvent{Event: event, Focus: activeFocus})
+		if event.Type == "done" {
+			activeFocus = ""
+		}
+	}
+	return result
+}
+
+func contributesFocusContext(eventType string) bool {
+	switch eventType {
+	case "set", "checkin", "pulse", "ack", "escalation", "done", "pause", "resume", "idle_return":
+		return true
+	default:
+		return false
+	}
 }
 
 func DeriveToday(events []Event, now time.Time, loc *time.Location) TodayStats {
