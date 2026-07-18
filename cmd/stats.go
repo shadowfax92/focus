@@ -26,7 +26,7 @@ var statsCmd = &cobra.Command{
 	Long:  "Show distraction stats with per-focus attribution. Use --detailed for today's local-time event timeline.",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateStatsOptions(args, statsDays, statsDetailed); err != nil {
+		if err := validateStatsOptions(args, statsDays, cmd.Flags().Changed("days"), statsDetailed); err != nil {
 			return err
 		}
 		events, err := store.Default().ReadAll()
@@ -58,17 +58,17 @@ type detailedTodayStats struct {
 }
 
 // validateStatsOptions keeps detailed timelines scoped to the today view.
-func validateStatsOptions(args []string, days int, detailed bool) error {
+func validateStatsOptions(args []string, days int, daysSet, detailed bool) error {
 	if len(args) == 1 && args[0] != "weeks" {
 		return fmt.Errorf("unknown stats view %q (expected weeks)", args[0])
 	}
-	if len(args) == 1 && days != 0 {
+	if len(args) == 1 && daysSet {
 		return fmt.Errorf("--days cannot be combined with the weeks view")
 	}
 	if days < 0 {
 		return fmt.Errorf("--days must be positive")
 	}
-	if detailed && (len(args) == 1 || days > 0) {
+	if detailed && (len(args) == 1 || daysSet) {
 		return fmt.Errorf("--detailed is only available for today's stats")
 	}
 	return nil

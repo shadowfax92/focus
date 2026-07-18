@@ -15,21 +15,26 @@ func TestStatsDetailedFlagAndRangeConflicts(t *testing.T) {
 		t.Fatalf("detailed flag = %+v, want -d shorthand", flag)
 	}
 	for _, tc := range []struct {
-		name string
-		args []string
-		days int
+		name    string
+		args    []string
+		days    int
+		daysSet bool
 	}{
-		{name: "days", days: 3},
+		{name: "days", days: 3, daysSet: true},
+		{name: "explicit zero days", daysSet: true},
 		{name: "weeks", args: []string{"weeks"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := validateStatsOptions(tc.args, tc.days, true); err == nil || !strings.Contains(err.Error(), "today's stats") {
+			if err := validateStatsOptions(tc.args, tc.days, tc.daysSet, true); err == nil || !strings.Contains(err.Error(), "today's stats") {
 				t.Fatalf("validateStatsOptions() error = %v, want detailed today conflict", err)
 			}
 		})
 	}
-	if err := validateStatsOptions(nil, 0, true); err != nil {
+	if err := validateStatsOptions(nil, 0, false, true); err != nil {
 		t.Fatalf("today detailed validation failed: %v", err)
+	}
+	if err := validateStatsOptions([]string{"weeks"}, 0, true, false); err == nil || !strings.Contains(err.Error(), "weeks view") {
+		t.Fatalf("explicit --days 0 with weeks error = %v, want range conflict", err)
 	}
 }
 
