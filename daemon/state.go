@@ -11,9 +11,12 @@ import (
 	"github.com/shadowfax92/focus/config"
 )
 
+// State is the current focus restored after a daemon restart. Budget belongs
+// to that focus; zero or a missing budget_ns field preserves legacy behavior.
 type State struct {
 	FocusText   string          `json:"focus_text,omitempty"`
 	SetAt       time.Time       `json:"set_at,omitempty,omitzero"`
+	Budget      time.Duration   `json:"budget_ns,omitempty"`
 	PausedUntil *time.Time      `json:"paused_until,omitempty"`
 	Position    config.Position `json:"position"`
 	Machine     MachineState    `json:"machine"`

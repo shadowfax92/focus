@@ -15,6 +15,8 @@ import (
 	"github.com/shadowfax92/focus/store"
 )
 
+// Daemon owns persisted focus state and reminder policy. Its mutex serializes
+// IPC, scheduler, and HUD input before presentation is queued to Cocoa.
 type Daemon struct {
 	mu           sync.Mutex
 	cfg          config.Config
@@ -26,7 +28,7 @@ type Daemon struct {
 	idle         func() float64
 	nextTick     time.Time
 	idleGuarded  bool
-	setFocusHUD  func(string, time.Time)
+	setFocusHUD  func(string, time.Time, time.Duration)
 	setPausedHUD func(bool)
 }
 
@@ -101,14 +103,15 @@ func (d *Daemon) hudConfig() hud.Config {
 // Ambient pill presentation is independent of this cadence choice.
 func (d *Daemon) directCheckins() bool { return d.cfg.ReminderStyle != config.StylePulse }
 
-// presentFocus sends focus text to the HUD. Tests replace this narrow output
-// seam so presentation policy can be verified without launching Cocoa.
-func (d *Daemon) presentFocus(text string, since time.Time) {
+// presentFocus sends the complete focus to the HUD, including its original
+// clock origin and budget on restore/resume. Tests replace this output seam
+// so presentation policy can be verified without launching Cocoa.
+func (d *Daemon) presentFocus(text string, since time.Time, budget time.Duration) {
 	if d.setFocusHUD != nil {
-		d.setFocusHUD(text, since)
+		d.setFocusHUD(text, since, budget)
 		return
 	}
-	hud.SetFocus(text, since)
+	hud.SetFocus(text, since, budget)
 }
 
 func (d *Daemon) presentPaused(paused bool) {
@@ -143,7 +146,7 @@ func (d *Daemon) restoreHUD() {
 		hud.ClearFocus()
 		return
 	}
-	d.presentFocus(d.state.FocusText, d.state.SetAt)
+	d.presentFocus(d.state.FocusText, d.state.SetAt, d.state.Budget)
 	paused := d.isPaused(now)
 	d.presentPaused(paused)
 	if !paused && d.machine.State().InTakeover {
@@ -219,7 +222,15 @@ func (d *Daemon) Handle(request ipc.Request) ipc.Response {
 	case "ping":
 		return ipc.Response{OK: true}
 	case "set":
-		if err := d.set(request.Text); err != nil {
+		var budget time.Duration
+		if request.Budget != "" {
+			var err error
+			budget, err = time.ParseDuration(request.Budget)
+			if err != nil || budget <= 0 {
+				return ipc.Response{Error: "budget must be a positive Go-style duration (for example 45m)"}
+			}
+		}
+		if err := d.set(request.Text, budget); err != nil {
 			return ipc.Response{Error: err.Error()}
 		}
 		return ipc.Response{OK: true}
@@ -255,7 +266,7 @@ func (d *Daemon) Handle(request ipc.Request) ipc.Response {
 	}
 }
 
-func (d *Daemon) set(text string) error {
+func (d *Daemon) set(text string, budget time.Duration) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return fmt.Errorf("focus text cannot be empty")
@@ -265,6 +276,7 @@ func (d *Daemon) set(text string) error {
 	now := d.now()
 	d.state.FocusText = text
 	d.state.SetAt = now
+	d.state.Budget = budget
 	d.machine.Reset()
 	d.idleGuarded = false
 	d.nextTick = now.Add(d.cfg.Interval)
@@ -272,7 +284,7 @@ func (d *Daemon) set(text string) error {
 		return err
 	}
 	hud.DismissTakeover()
-	d.presentFocus(text, now)
+	d.presentFocus(text, now, budget)
 	if d.isPaused(now) {
 		d.presentPaused(true)
 		return d.saveLocked()
@@ -304,6 +316,7 @@ func (d *Daemon) done() error {
 func (d *Daemon) clearFocusLocked() error {
 	d.state.FocusText = ""
 	d.state.SetAt = time.Time{}
+	d.state.Budget = 0
 	d.state.PausedUntil = nil
 	d.machine.Reset()
 	hud.DismissTakeover()
@@ -343,7 +356,7 @@ func (d *Daemon) resumeLocked(now time.Time) error {
 	}
 	d.presentPaused(false)
 	if d.state.FocusText != "" {
-		d.presentFocus(d.state.FocusText, d.state.SetAt)
+		d.presentFocus(d.state.FocusText, d.state.SetAt, d.state.Budget)
 		if d.machine.State().InTakeover {
 			hud.ShowTakeover(d.takeoverContentLocked(now))
 		}
@@ -411,10 +424,13 @@ func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung 
 	if newText != "" && (kind == "refocus" || kind == "done") {
 		d.state.FocusText = newText
 		d.state.SetAt = now
+		// Inline refocus/next-task input has no budget field. A fresh focus
+		// must not inherit the time commitment made for the previous one.
+		d.state.Budget = 0
 		if err := d.appendLocked(store.Event{TS: now, Type: "set", Text: newText}); err != nil {
 			return err
 		}
-		d.presentFocus(newText, now)
+		d.presentFocus(newText, now, 0)
 	}
 	return d.saveLocked()
 }
@@ -425,6 +441,7 @@ func (d *Daemon) status() ipc.Status {
 	now := d.now()
 	status := ipc.Status{
 		Text:        d.state.FocusText,
+		Budget:      d.state.Budget,
 		Rung:        d.machine.State().Rung,
 		Paused:      d.isPaused(now),
 		PausedUntil: d.state.PausedUntil,
@@ -432,7 +449,11 @@ func (d *Daemon) status() ipc.Status {
 	if !d.state.SetAt.IsZero() {
 		setAt := d.state.SetAt
 		status.SetAt = &setAt
-		status.ElapsedSeconds = int64(now.Sub(setAt).Seconds())
+		elapsed := now.Sub(setAt)
+		status.ElapsedSeconds = int64(elapsed.Seconds())
+		if d.state.Budget > 0 && elapsed > d.state.Budget {
+			status.Overage = elapsed - d.state.Budget
+		}
 	}
 	return status
 }

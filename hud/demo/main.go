@@ -32,6 +32,7 @@ func init() { runtime.LockOSThread() }
 func main() {
 	text := flag.String("text", "ship the onboarding PR", "focus text")
 	since := flag.Duration("since", 47*time.Minute, "how long ago the focus started")
+	budget := flag.Duration("budget", 0, "optional focus time budget (for example 45m)")
 	pill := flag.Bool("pill", false, "show the pill")
 	pulse := flag.Int("pulse", -1, "fire a pulse at this rung (implies -pill)")
 	pulseDelay := flag.Duration("pulse-delay", 1500*time.Millisecond, "delay before the pulse")
@@ -71,7 +72,7 @@ func main() {
 			// Mimic the daemon: refocus/done-with-text set the new focus,
 			// done-with-nothing clears it.
 			if (kind == hud.AckRefocus || kind == hud.AckDone) && newText != "" {
-				hud.SetFocus(newText, time.Now())
+				hud.SetFocus(newText, time.Now(), 0)
 			} else if kind == hud.AckDone {
 				hud.ClearFocus()
 			}
@@ -84,7 +85,7 @@ func main() {
 	go func() {
 		time.Sleep(600 * time.Millisecond)
 		if *pill || *pulse >= 0 {
-			hud.SetFocus(*text, time.Now().Add(-*since))
+			hud.SetFocus(*text, time.Now().Add(-*since), *budget)
 		}
 		if *pulse >= 0 {
 			time.Sleep(*pulseDelay)

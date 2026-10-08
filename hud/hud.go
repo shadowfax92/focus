@@ -73,9 +73,10 @@ func Run(cfg Config, ev Events) {
 	runImpl(cfg, ev)
 }
 
-// SetFocus shows the pill with the given text; since drives the elapsed label.
-func SetFocus(text string, since time.Time) {
-	setFocusImpl(text, since)
+// SetFocus shows the pill; since drives its existing wall-clock elapsed label.
+// A zero budget keeps the elapsed-only display. It does not change reminders.
+func SetFocus(text string, since time.Time, budget time.Duration) {
+	setFocusImpl(text, since, budget)
 }
 
 // ClearFocus hides the pill.

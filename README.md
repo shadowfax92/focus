@@ -36,6 +36,7 @@ This builds `~/Applications/Focus.app`, symlinks the CLI into `$GOPATH/bin`, and
 
 ```sh
 focus set "ship the onboarding PR"
+focus set "Fix setup" 45m    # optional time budget (also accepts 1h30m)
 focus status
 focus pause 45m              # meeting mode
 focus resume
@@ -47,9 +48,9 @@ focus stats
 
 | Command | Description |
 |---------|-------------|
-| `focus set "…"` | Set or replace the current priority |
+| `focus set "…" [budget]` | Set or replace the current priority, optionally with a budget such as `45m` or `1h30m` |
 | `focus done` / `focus clear` | Complete and hide the current priority |
-| `focus status` | Show focus text, elapsed time, escalation rung, and pause state |
+| `focus status` | Show focus text, elapsed time, budget and overage when set, escalation rung, and pause state |
 | `focus pause <duration>` | Pause reminders, using Go durations such as `45m` or `2h` |
 | `focus resume` | Resume the HUD and reminder timer |
 | `focus ack [--drifted]` | Acknowledge the current reminder from the CLI |
@@ -61,6 +62,12 @@ focus stats
 | `focus config` | Print the resolved configuration |
 | `focus install` / `uninstall` | Manage the app bundle and LaunchAgent |
 | `focus daemon` | Run the daemon in the foreground for development |
+
+A budget adds elapsed / budget to the pill, such as `Fix setup · 9m / 45m`.
+Going over adds an amber suffix: `Fix setup · 57m / 45m · +12m`. Budgets must
+be positive Go-style durations. Elapsed time still includes pauses and idle
+time; budgets survive daemon restarts and reset when a new focus starts.
+Leaving the budget out keeps the existing elapsed-only pill.
 
 The default stats view keeps the headline metrics compact, then lists each focus used today with its distraction count, highest first. Repeated exact focus text is combined; activity from legacy history before its first `set` appears as `(unattributed)` rather than being guessed.
 
@@ -112,7 +119,7 @@ breathing_gate_seconds: 3    # escalation takeovers; check-ins arm when faded in
 | Path | Purpose |
 |------|---------|
 | `~/.config/focus/config.yaml` | User configuration and quotes |
-| `~/.local/state/focus/current.json` | Current focus, pause, rung, and custom position |
+| `~/.local/state/focus/current.json` | Current focus and optional budget, pause, rung, and custom position |
 | `~/.local/share/focus/events.jsonl` | Append-only event history used for every stats view |
 | `~/.focus.sock` | Per-user daemon socket |
 

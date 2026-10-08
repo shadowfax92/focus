@@ -12,6 +12,8 @@
 // Implemented in hud_darwin.go (//export).
 extern void goHudAck(int kind, int rung, double latencySeconds, const char *newText);
 extern void goHudMoved(double x, double y);
+extern void goHudFormatPillTime(double elapsedSeconds, long long budgetNanos,
+                              char **suffix, char **overage);
 
 // Mirrors hud.AckKind iota order.
 enum { kAckOnTask = 0, kAckDrifted = 1, kAckRefocus = 2, kAckDone = 3 };
@@ -122,6 +124,7 @@ static NSView *_pillPanelView = nil;
 static NSTextField *_pillLabel = nil;
 static NSString *_focusText = nil;
 static double _sinceEpoch = 0;
+static long long _budgetNanos = 0;
 static BOOL _focusSet = NO;
 static BOOL _paused = NO;
 static BOOL _pulsing = NO;
@@ -202,16 +205,6 @@ static GlowSpec glowForRung(int rung) {
     return (GlowSpec){22, 36, 0.85f, 1.00f, 2.5, 1.00, 0.50};
 }
 
-static NSString *elapsedSuffix(void) {
-    if (_sinceEpoch <= 0) return nil;
-    long mins = (long)((nowSec() - _sinceEpoch) / 60.0);
-    if (mins < 1) return nil;
-    if (mins < 60) return [NSString stringWithFormat:@"· %ldm", mins];
-    long h = mins / 60, m = mins % 60;
-    if (m == 0) return [NSString stringWithFormat:@"· %ldh", h];
-    return [NSString stringWithFormat:@"· %ldh %ldm", h, m];
-}
-
 static NSAttributedString *pillAttr(void) {
     NSMutableAttributedString *s = [[[NSMutableAttributedString alloc] init] autorelease];
     [s appendAttributedString:[[[NSAttributedString alloc]
@@ -220,13 +213,28 @@ static NSAttributedString *pillAttr(void) {
                 NSFontAttributeName: [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],
                 NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.95],
             }] autorelease]];
-    NSString *elapsed = elapsedSuffix();
-    if (elapsed) {
+    // Go owns the text/threshold rules; Cocoa retains the existing clock and
+    // minute timer. Copy the two C-owned strings before releasing them here.
+    char *dim = NULL, *warm = NULL;
+    if (_sinceEpoch > 0) goHudFormatPillTime(nowSec() - _sinceEpoch, _budgetNanos, &dim, &warm);
+    NSString *elapsed = dim ? [NSString stringWithUTF8String:dim] : @"";
+    NSString *overage = warm ? [NSString stringWithUTF8String:warm] : @"";
+    free(dim);
+    free(warm);
+    if (elapsed.length) {
         [s appendAttributedString:[[[NSAttributedString alloc]
             initWithString:[@"  " stringByAppendingString:elapsed]
                 attributes:@{
                     NSFontAttributeName: [NSFont systemFontOfSize:15 weight:NSFontWeightRegular],
                     NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.55],
+                }] autorelease]];
+    }
+    if (overage.length) {
+        [s appendAttributedString:[[[NSAttributedString alloc]
+            initWithString:[@"  " stringByAppendingString:overage]
+                attributes:@{
+                    NSFontAttributeName: [NSFont systemFontOfSize:15 weight:NSFontWeightRegular],
+                    NSForegroundColorAttributeName: [NSColor colorWithRed:1.0 green:0.70 blue:0.30 alpha:0.95],
                 }] autorelease]];
     }
     return s;
@@ -810,13 +818,14 @@ void hudRunApp(void) {
     [NSApp run];
 }
 
-void hudSetFocus(const char *text, double sinceEpoch) {
+void hudSetFocus(const char *text, double sinceEpoch, long long budgetNanos) {
     char *copy = strdup(text ? text : "");
     dispatch_async(dispatch_get_main_queue(), ^{
         [_focusText release];
         _focusText = [([NSString stringWithUTF8String:copy] ?: @"") retain];
         free(copy);
         _sinceEpoch = sinceEpoch;
+        _budgetNanos = budgetNanos;
         _focusSet = YES;
         refreshPillVisibility();
     });
@@ -827,6 +836,7 @@ void hudClearFocus(void) {
         [_focusText release];
         _focusText = nil;
         _sinceEpoch = 0;
+        _budgetNanos = 0;
         _focusSet = NO;
         refreshPillVisibility();
     });

@@ -10,16 +10,47 @@ import (
 )
 
 var setCmd = &cobra.Command{
-	Use:   "set <text>",
+	Use:   "set <text> [budget]",
 	Short: "Set or replace the current focus",
-	Args:  cobra.ExactArgs(1),
+	Long:  "Set or replace the current focus, with an optional positive Go-style time budget (for example 45m or 1h30m).",
+	Args: func(cmd *cobra.Command, args []string) error {
+		if setHelpRequested(cmd, args) {
+			return nil
+		}
+		return cobra.RangeArgs(1, 2)(cmd, args)
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := send(ipc.Request{Action: "set", Text: args[0]}); err != nil {
+		if setHelpRequested(cmd, args) {
+			return cmd.Help()
+		}
+		request := ipc.Request{Action: "set", Text: args[0]}
+		if len(args) == 2 {
+			budget, err := time.ParseDuration(args[1])
+			if err != nil || budget <= 0 {
+				return fmt.Errorf("budget must be a positive Go-style duration (for example 45m)")
+			}
+			request.Budget = args[1]
+		}
+		if err := send(request); err != nil {
 			return err
 		}
-		fmt.Printf("Focused: %s\n", args[0])
+		fmt.Fprintf(cmd.OutOrStdout(), "Focused: %s\n", args[0])
 		return nil
 	},
+}
+
+// Flag parsing stops at the text to accept negative positional budgets. Keep
+// trailing help flags working, while an explicit -- still makes them literal.
+func setHelpRequested(cmd *cobra.Command, args []string) bool {
+	if cmd.ArgsLenAtDash() >= 0 {
+		return false
+	}
+	for i, arg := range args {
+		if i > 0 && (arg == "--help" || arg == "-h") {
+			return true
+		}
+	}
+	return false
 }
 
 var doneCmd = &cobra.Command{
@@ -48,22 +79,30 @@ var statusCmd = &cobra.Command{
 		if !response.OK {
 			return fmt.Errorf("%s", response.Error)
 		}
+		out := cmd.OutOrStdout()
 		if response.Status == nil || response.Status.Text == "" {
-			fmt.Println("No focus set.")
+			fmt.Fprintln(out, "No focus set.")
 			return nil
 		}
 		status := response.Status
-		fmt.Printf("Focus:   %s\n", status.Text)
-		fmt.Printf("Elapsed: %s\n", shortDuration(time.Duration(status.ElapsedSeconds)*time.Second))
-		fmt.Printf("Rung:    %d\n", status.Rung)
+		elapsed := time.Duration(status.ElapsedSeconds) * time.Second
+		fmt.Fprintf(out, "Focus:   %s\n", status.Text)
+		fmt.Fprintf(out, "Elapsed: %s\n", shortDuration(elapsed))
+		if status.Budget > 0 {
+			fmt.Fprintf(out, "Budget:  %s\n", status.Budget)
+			if status.Overage > 0 {
+				fmt.Fprintf(out, "Overage: +%s\n", status.Overage)
+			}
+		}
+		fmt.Fprintf(out, "Rung:    %d\n", status.Rung)
 		if status.Paused {
 			if status.PausedUntil != nil {
-				fmt.Printf("Paused:  until %s (%s remaining)\n", status.PausedUntil.Local().Format("3:04 PM"), shortDuration(time.Until(*status.PausedUntil)))
+				fmt.Fprintf(out, "Paused:  until %s (%s remaining)\n", status.PausedUntil.Local().Format("3:04 PM"), shortDuration(time.Until(*status.PausedUntil)))
 			} else {
-				fmt.Println("Paused:  yes")
+				fmt.Fprintln(out, "Paused:  yes")
 			}
 		} else {
-			fmt.Println("Paused:  no")
+			fmt.Fprintln(out, "Paused:  no")
 		}
 		return nil
 	},
@@ -119,6 +158,9 @@ var ackCmd = &cobra.Command{
 }
 
 func init() {
+	// Once text begins, treat the remaining token as a positional budget so
+	// negative durations get the same useful validation error as other inputs.
+	setCmd.Flags().SetInterspersed(false)
 	ackCmd.Flags().BoolVar(&ackDrifted, "drifted", false, "record that you had drifted")
 	rootCmd.AddCommand(setCmd, doneCmd, statusCmd, pauseCmd, resumeCmd, ackCmd)
 }

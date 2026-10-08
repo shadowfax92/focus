@@ -29,10 +29,10 @@ func runImpl(cfg Config, ev Events) {
 	C.hudRunApp() // never returns
 }
 
-func setFocusImpl(text string, since time.Time) {
+func setFocusImpl(text string, since time.Time, budget time.Duration) {
 	ct := C.CString(text)
 	defer C.free(unsafe.Pointer(ct))
-	C.hudSetFocus(ct, C.double(since.Unix()))
+	C.hudSetFocus(ct, C.double(since.Unix()), C.longlong(budget))
 }
 
 func clearFocusImpl() {
@@ -63,6 +63,17 @@ func setPausedImpl(paused bool) {
 		p = 1
 	}
 	C.hudSetPaused(p)
+}
+
+// The existing Cocoa timer owns repaint cadence and wall-clock measurement.
+// It asks Go for both text runs in one call so tests and pixels share the
+// formatter. These are C allocations; the caller must free both after copying.
+//
+//export goHudFormatPillTime
+func goHudFormatPillTime(elapsedSeconds C.double, budgetNanos C.longlong, suffix, overage **C.char) {
+	dim, warm := FormatPillTime(time.Duration(float64(elapsedSeconds)*float64(time.Second)), time.Duration(budgetNanos))
+	*suffix = C.CString(dim)
+	*overage = C.CString(warm)
 }
 
 //export goHudAck
