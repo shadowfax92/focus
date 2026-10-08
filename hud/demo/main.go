@@ -11,6 +11,7 @@ extern void hudTestPillClick(int optionHeld);
 extern void hudTestPillDrag(double dx, double dy);
 extern double hudTestPillAlpha(void);
 extern void hudTestSnapshot(const char *pillPath, const char *takeoverPath);
+extern void hudTestBackdrop(const char *imagePath);
 */
 import "C"
 
@@ -49,6 +50,7 @@ func main() {
 	posY := flag.Float64("y", 0, "pill y for -pos custom")
 	pause := flag.Duration("pause-test", 0, "SetPaused(true) after this delay, resume 2s later (0 = off)")
 	auto := flag.String("auto", "", "comma-separated synthetic input: click|optclick (pulse acks)|drag (no modifier)|state|enter|d|n|f|esc|type:<text>")
+	backdrop := flag.String("backdrop", "", "image shown just under the pill, so -snap shows the glass over known content")
 	snap := flag.String("snap", "", "write <prefix>-pill.png / <prefix>-takeover.png at -snap-delay")
 	snapDelay := flag.Duration("snap-delay", 4*time.Second, "delay before -snap renders")
 	autoDelay := flag.Duration("auto-delay", 2*time.Second, "wait after the last show step before -auto runs")
@@ -86,6 +88,11 @@ func main() {
 		time.Sleep(600 * time.Millisecond)
 		if *pill || *pulse >= 0 {
 			hud.SetFocus(*text, time.Now().Add(-*since), *budget)
+			if *backdrop != "" {
+				cb := C.CString(*backdrop)
+				C.hudTestBackdrop(cb)
+				C.free(unsafe.Pointer(cb))
+			}
 		}
 		if *pulse >= 0 {
 			time.Sleep(*pulseDelay)

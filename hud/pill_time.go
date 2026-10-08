@@ -5,38 +5,47 @@ import (
 	"time"
 )
 
-// FormatPillTime supplies separate dim and warm text runs to the Cocoa pill.
+// PillTime is the pill's time readout, split into the runs the Cocoa time
+// chip styles separately: bright elapsed, dim budget, and a red overage
+// sub-chip. An empty Elapsed hides the chip entirely.
+type PillTime struct {
+	Elapsed string // "9m"; empty during an unbudgeted focus's first minute
+	Budget  string // "/ 45m" when a budget is set
+	Overage string // "+12m" once elapsed exceeds the budget
+}
+
+// FormatPillTime owns the pill's text rules so tests and pixels share them.
 // Elapsed keeps the existing whole-minute display; exact durations determine
 // overage so crossing a budget is visible even before the next whole minute.
-func FormatPillTime(elapsed, budget time.Duration) (suffix, overage string) {
+func FormatPillTime(elapsed, budget time.Duration) PillTime {
 	elapsed = max(elapsed, 0)
 	minutes := int64(elapsed / time.Minute)
 	if budget <= 0 {
 		if minutes == 0 {
-			return "", ""
+			return PillTime{}
 		}
-		return "· " + pillMinutes(minutes), ""
+		return PillTime{Elapsed: pillMinutes(minutes)}
 	}
 
 	budgetText := budget.String()
 	if budget%time.Minute == 0 {
 		budgetText = pillMinutes(int64(budget / time.Minute))
 	}
-	suffix = fmt.Sprintf("· %s / %s", pillMinutes(minutes), budgetText)
+	t := PillTime{Elapsed: pillMinutes(minutes), Budget: "/ " + budgetText}
 	if elapsed <= budget {
-		return suffix, ""
+		return t
 	}
 
 	extra := elapsed - budget
 	switch {
 	case extra >= time.Minute:
-		overage = pillMinutes(int64(extra / time.Minute))
+		t.Overage = "+" + pillMinutes(int64(extra/time.Minute))
 	case extra >= time.Second:
-		overage = fmt.Sprintf("%ds", extra/time.Second)
+		t.Overage = fmt.Sprintf("+%ds", extra/time.Second)
 	default:
-		overage = "<1s"
+		t.Overage = "+<1s"
 	}
-	return suffix, "· +" + overage
+	return t
 }
 
 func pillMinutes(minutes int64) string {

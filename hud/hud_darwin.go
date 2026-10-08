@@ -66,14 +66,16 @@ func setPausedImpl(paused bool) {
 }
 
 // The existing Cocoa timer owns repaint cadence and wall-clock measurement.
-// It asks Go for both text runs in one call so tests and pixels share the
-// formatter. These are C allocations; the caller must free both after copying.
+// It asks Go for all three chip runs in one call so tests and pixels share
+// the formatter. These are C allocations; the caller must free each after
+// copying.
 //
 //export goHudFormatPillTime
-func goHudFormatPillTime(elapsedSeconds C.double, budgetNanos C.longlong, suffix, overage **C.char) {
-	dim, warm := FormatPillTime(time.Duration(float64(elapsedSeconds)*float64(time.Second)), time.Duration(budgetNanos))
-	*suffix = C.CString(dim)
-	*overage = C.CString(warm)
+func goHudFormatPillTime(elapsedSeconds C.double, budgetNanos C.longlong, elapsed, budget, overage **C.char) {
+	t := FormatPillTime(time.Duration(float64(elapsedSeconds)*float64(time.Second)), time.Duration(budgetNanos))
+	*elapsed = C.CString(t.Elapsed)
+	*budget = C.CString(t.Budget)
+	*overage = C.CString(t.Overage)
 }
 
 //export goHudAck

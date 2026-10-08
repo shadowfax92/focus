@@ -1,10 +1,14 @@
 // focus HUD: ambient glow pill + pulse ladder + full-screen ack takeover.
-// Visual language lifted from mac-notify's overlay (dark panel, cyan glow,
-// generation-guarded breathing loops). Memory model is MRC (no ARC flags in
-// the cgo build): long-lived views are created once and retained forever;
-// per-show strings are strdup'd outside the main-queue hop and freed inside.
+// The pill is Liquid Glass (NSGlassEffectView on macOS 26) with an amber glow,
+// per the owner-approved Paper design "02 · Liquid"; the takeover keeps the
+// visual language lifted from mac-notify's overlay (dark panel, cyan glow).
+// Both animate with generation-guarded breathing loops. Memory model is MRC
+// (no ARC flags in the cgo build): long-lived views are created once and
+// retained forever; per-show strings are strdup'd outside the main-queue hop
+// and freed inside.
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
+#include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
 #include "hud_darwin.h"
@@ -14,16 +18,32 @@ extern void goHudAck(int kind, int rung, double latencySeconds, const char *newT
 extern void goHudPassivePulseAck(int kind, unsigned long long reminderID, double latencySeconds);
 extern void goHudMoved(double x, double y);
 extern void goHudFormatPillTime(double elapsedSeconds, long long budgetNanos,
-                              char **suffix, char **overage);
+                              char **elapsed, char **budget, char **overage);
 
 // Mirrors hud.AckKind iota order.
 enum { kAckOnTask = 0, kAckDrifted = 1, kAckRefocus = 2, kAckDone = 3 };
 
 static const CGFloat kPillWidth = 460;
-static const CGFloat kPillPadX = 18;
-static const CGFloat kPillPadY = 13;
-// Transparent margin around the visual panel so the layer shadow (the glow)
-// has room to render instead of clipping at the window edge.
+// Liquid layout: focus text on the left, a nested time chip hugging the right
+// rim. A single-line pill is a 46pt capsule; wrapped text grows it downward
+// as a rounded rect with the chip centered.
+static const CGFloat kPillPadLeft = 24;
+static const CGFloat kPillPadRight = 7;
+static const CGFloat kPillPadY = 7;
+static const CGFloat kPillTextPadY = 11; // keeps wrapped lines off the corners
+static const CGFloat kPillGap = 16;      // focus text -> chip
+static const CGFloat kChipH = 32;
+static const CGFloat kChipPadX = 14;
+static const CGFloat kChipGap = 6;       // elapsed -> budget -> overage
+static const CGFloat kChipOverEndPad = 6;
+// The overage sub-chip's white ring is drawn as an inside border, so its
+// frame grows by the ring width to keep the red fill at Paper's size.
+static const CGFloat kOverRing = 1.5;
+static const CGFloat kOverPadX = 9;
+static const CGFloat kOverH = 20 + 2 * kOverRing;
+static const CGFloat kPillMaxRadius = (kChipH + 2 * kPillPadY) / 2;
+// Transparent margin around the visual panel so the glow and drop shadow
+// have room to render instead of clipping at the window edge.
 static const CGFloat kGlowPad = 44;
 static const CGFloat kTopGap = 8;
 static const CGFloat kSideMargin = 16;
@@ -33,6 +53,7 @@ static const CGFloat kSideMargin = 16;
 static void layoutPill(void);
 static void refreshPillVisibility(void);
 static void updateInteractivity(void);
+static void stylePill(void);
 static void pillBreathe(int gen, BOOL expand);
 static void endPulseNow(void);
 static void killPulseSilent(void);
@@ -51,6 +72,27 @@ static NSAttributedString *doneHintString(void);
 
 static NSColor *cyan(CGFloat alpha) {
     return [NSColor colorWithRed:0 green:0.85 blue:1.0 alpha:alpha];
+}
+
+// Pill colour roles (owner feedback on the Paper variants): amber only ever
+// means "look at me" (the glow), and over-budget is a redder red with a white
+// ring so the two signals can never be mistaken for each other.
+static NSColor *amber(CGFloat alpha) {
+    return [NSColor colorWithRed:1.0 green:0.667 blue:0.157 alpha:alpha]; // #FFAA28
+}
+
+static NSColor *amberRim(CGFloat alpha) {
+    return [NSColor colorWithRed:1.0 green:0.784 blue:0.431 alpha:alpha]; // #FFC86E
+}
+
+static NSColor *overRed(CGFloat alpha) {
+    return [NSColor colorWithRed:1.0 green:0.267 blue:0.2 alpha:alpha]; // #FF4433
+}
+
+// Ink adapts to the glass: white over dark backdrops, near-black over light.
+static NSColor *pillInk(BOOL dark, CGFloat alpha) {
+    if (dark) return [NSColor colorWithWhite:1.0 alpha:alpha];
+    return [NSColor colorWithRed:0.043 green:0.043 blue:0.055 alpha:alpha]; // #0B0B0E
 }
 
 static double nowSec(void) {
@@ -100,6 +142,16 @@ static BOOL rectOnAnyScreen(NSRect r) {
 }
 @end
 
+// The glass's content view. NSGlassEffectView picks a light or dark appearance
+// from whatever is behind it and pushes it down here, so this is where the
+// pill learns to switch ink when it drifts from a dark editor onto a white page.
+@interface PillContentView : NSView
+@end
+
+// Amber wash inside the glass for the glow; its backing layer is a gradient.
+@interface PillTintView : NSView
+@end
+
 // Spotlight pattern: a nonactivating borderless panel that can still become
 // key, so the takeover swallows every keystroke without activating the app —
 // and key focus snaps back to the previous app when it orders out.
@@ -119,10 +171,34 @@ static NSString *_posPreset = nil;
 static double _posX = 0, _posY = 0;
 static int _pulseSeconds = 8;
 
+// Pill view tree (window = panel inset by -kGlowPad):
+//   _pillRoot (PillView: drag + ack clicks for the whole window)
+//     _pillDrop   static dark drop shadow, masked to outside the glass
+//     _pillGlow   amber halo that breathes, masked to outside the glass
+//     _pillGlass  NSGlassEffectView (NSVisualEffectView before macOS 26)
+//       _pillContent (PillContentView)
+//         _pillTint   amber wash + rim that breathes with the halo
+//         _pillLabel  focus text
+//         _pillChip   time chip: _pillTimeLabel + _pillOver(_pillOverLabel)
+// Effect views mask their content to their own bounds, so anything that must
+// glow outside the glass lives in a sibling view behind it.
 static NSPanel *_pill = nil;
 static PillView *_pillRoot = nil;
-static NSView *_pillPanelView = nil;
+static NSView *_pillDrop = nil;
+static NSView *_pillGlow = nil;
+static NSView *_pillGlass = nil;
+static PillContentView *_pillContent = nil;
+static PillTintView *_pillTint = nil;
 static NSTextField *_pillLabel = nil;
+static NSView *_pillChip = nil;
+static NSTextField *_pillTimeLabel = nil;
+static NSView *_pillOver = nil;
+static NSTextField *_pillOverLabel = nil;
+// Go's chip runs as of the last layout. Restyling on an appearance flip reuses
+// them, so the text can't change width without a matching relayout.
+static NSString *_pillElapsed = nil;
+static NSString *_pillBudget = nil;
+static NSString *_pillOverage = nil;
 static NSString *_focusText = nil;
 static double _sinceEpoch = 0;
 static long long _budgetNanos = 0;
@@ -163,6 +239,11 @@ static int _tkRung = 0;
 // --- pill -------------------------------------------------------------------
 
 @implementation PillView
+// Glass internals and labels must never consume the drag or the ack click:
+// every hit inside the pill window lands here.
+- (NSView *)hitTest:(NSPoint)point {
+    return [super hitTest:point] ? self : nil;
+}
 - (void)mouseDown:(NSEvent *)event {
     dragStartScreen = [self.window convertPointToScreen:event.locationInWindow];
     dragStartOrigin = self.window.frame.origin;
@@ -195,53 +276,145 @@ static int _tkRung = 0;
 }
 @end
 
+@implementation PillContentView
+- (void)viewDidChangeEffectiveAppearance {
+    [super viewDidChangeEffectiveAppearance];
+    stylePill();
+}
+@end
+
+@implementation PillTintView
+- (CALayer *)makeBackingLayer {
+    return [CAGradientLayer layer];
+}
+@end
+
+// Glow look per rung. The halo radius/opacity, tint alpha and rim are visual;
+// period is pulse timing and must not change with a restyle. Rung 0 is the
+// frequent passive nudge (every pulse_interval), so it stays gentle; rung 2 is
+// the owner's hard ceiling — no rung may glow brighter or wider than it.
 typedef struct {
-    CGFloat radiusMin, radiusMax;
-    float opacityMin, opacityMax;
-    CGFloat borderWidth;
+    CGFloat radiusMin, radiusMax;   // amber halo blur outside the glass
+    float opacityMin, opacityMax;   // amber halo opacity
+    CGFloat tintMin, tintMax;       // alpha of the amber wash inside the glass
+    CGFloat borderWidth;            // amber rim, fades with the wash
     CGFloat borderAlpha;
     double period;
 } GlowSpec;
 
 static GlowSpec glowForRung(int rung) {
-    if (rung <= 0) return (GlowSpec){8, 20, 0.40f, 0.90f, 1.5, 0.60, 1.0};
-    if (rung == 1) return (GlowSpec){12, 30, 0.60f, 1.00f, 2.0, 0.85, 0.65};
-    return (GlowSpec){22, 36, 0.85f, 1.00f, 2.5, 1.00, 0.50};
+    if (rung <= 0) return (GlowSpec){5, 13, 0.30f, 0.55f, 0.35, 0.75, 1.0, 0.55, 1.0};
+    if (rung == 1) return (GlowSpec){8, 16, 0.40f, 0.60f, 0.50, 0.85, 1.25, 0.75, 0.65};
+    return (GlowSpec){14, 20, 0.55f, 0.65f, 0.80, 1.00, 1.5, 0.90, 0.50};
 }
 
-static NSAttributedString *pillAttr(void) {
-    NSMutableAttributedString *s = [[[NSMutableAttributedString alloc] init] autorelease];
-    [s appendAttributedString:[[[NSAttributedString alloc]
+static const CGFloat kGlowRestRadius = 5;
+// Paper's box-shadow spread: the halo starts slightly outside the rim.
+static const CGFloat kGlowSpread = 2;
+
+static BOOL pillIsDark(void) {
+    NSAppearance *a = _pillContent ? _pillContent.effectiveAppearance : NSApp.effectiveAppearance;
+    NSString *best = [a bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    return [best isEqualToString:NSAppearanceNameDarkAqua];
+}
+
+static NSAttributedString *pillFocusAttr(BOOL dark) {
+    // Dark glass gets a soft drop shadow under white ink; light glass gets a
+    // white halo under dark ink. Either way the text lifts off busy content.
+    NSShadow *shadow = [[[NSShadow alloc] init] autorelease];
+    shadow.shadowOffset = dark ? NSMakeSize(0, -1) : NSZeroSize;
+    shadow.shadowBlurRadius = dark ? 3 : 8;
+    shadow.shadowColor = dark ? [NSColor colorWithWhite:0 alpha:0.45] : [NSColor colorWithWhite:1 alpha:0.7];
+    return [[[NSAttributedString alloc]
         initWithString:(_focusText ?: @"")
             attributes:@{
-                NSFontAttributeName: [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],
-                NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.95],
+                NSFontAttributeName: [NSFont systemFontOfSize:18 weight:NSFontWeightHeavy],
+                NSKernAttributeName: @(-0.27),
+                NSForegroundColorAttributeName: pillInk(dark, 1.0),
+                NSShadowAttributeName: shadow,
+            }] autorelease];
+}
+
+static NSAttributedString *pillTimeAttr(BOOL dark) {
+    NSMutableAttributedString *s = [[[NSMutableAttributedString alloc] init] autorelease];
+    NSString *elapsed = _pillElapsed ?: @"";
+    [s appendAttributedString:[[[NSAttributedString alloc]
+        initWithString:elapsed
+            attributes:@{
+                NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:15 weight:NSFontWeightBold],
+                NSForegroundColorAttributeName: pillInk(dark, 1.0),
             }] autorelease]];
-    // Go owns the text/threshold rules; Cocoa retains the existing clock and
-    // minute timer. Copy the two C-owned strings before releasing them here.
-    char *dim = NULL, *warm = NULL;
-    if (_sinceEpoch > 0) goHudFormatPillTime(nowSec() - _sinceEpoch, _budgetNanos, &dim, &warm);
-    NSString *elapsed = dim ? [NSString stringWithUTF8String:dim] : @"";
-    NSString *overage = warm ? [NSString stringWithUTF8String:warm] : @"";
-    free(dim);
-    free(warm);
-    if (elapsed.length) {
+    if (_pillBudget.length && elapsed.length) {
+        // Kern on elapsed's last glyph is the gap, so no space glyph is measured.
+        [s addAttribute:NSKernAttributeName value:@(kChipGap) range:NSMakeRange(elapsed.length - 1, 1)];
         [s appendAttributedString:[[[NSAttributedString alloc]
-            initWithString:[@"  " stringByAppendingString:elapsed]
+            initWithString:_pillBudget
                 attributes:@{
-                    NSFontAttributeName: [NSFont systemFontOfSize:15 weight:NSFontWeightRegular],
-                    NSForegroundColorAttributeName: [NSColor colorWithWhite:1.0 alpha:0.55],
-                }] autorelease]];
-    }
-    if (overage.length) {
-        [s appendAttributedString:[[[NSAttributedString alloc]
-            initWithString:[@"  " stringByAppendingString:overage]
-                attributes:@{
-                    NSFontAttributeName: [NSFont systemFontOfSize:15 weight:NSFontWeightRegular],
-                    NSForegroundColorAttributeName: [NSColor colorWithRed:1.0 green:0.70 blue:0.30 alpha:0.95],
+                    NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:15 weight:NSFontWeightMedium],
+                    NSForegroundColorAttributeName: pillInk(dark, dark ? 0.58 : 0.50),
                 }] autorelease]];
     }
     return s;
+}
+
+static NSAttributedString *pillOverAttr(void) {
+    return [[[NSAttributedString alloc]
+        initWithString:(_pillOverage ?: @"")
+            attributes:@{
+                NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:14 weight:NSFontWeightHeavy],
+                NSForegroundColorAttributeName: [NSColor whiteColor],
+            }] autorelease];
+}
+
+static NSTextField *makePillLabel(NSView *parent) {
+    NSTextField *l = [[NSTextField labelWithString:@""] retain];
+    [parent addSubview:l];
+    return l;
+}
+
+// Sizes a one-line label to its text and puts the glyphs (not the cell's
+// internal inset) at textX, vertically centered on midY.
+static void placeLabel(NSTextField *l, NSAttributedString *attr, CGFloat textX, CGFloat midY) {
+    l.attributedStringValue = attr;
+    [l sizeToFit];
+    NSSize fit = l.frame.size;
+    CGFloat inset = (fit.width - ceil(attr.size.width)) / 2;
+    l.frame = NSMakeRect(textX - inset, round(midY - fit.height / 2), fit.width, fit.height);
+}
+
+static NSView *makeShadowView(CGColorRef color, CGFloat radius, float opacity, CGSize offset) {
+    NSView *v = [[NSView alloc] initWithFrame:_pillRoot.bounds];
+    v.wantsLayer = YES;
+    v.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    CALayer *layer = v.layer;
+    layer.shadowColor = color;
+    layer.shadowRadius = radius;
+    layer.shadowOpacity = opacity;
+    layer.shadowOffset = offset;
+    CAShapeLayer *mask = [CAShapeLayer layer];
+    mask.fillRule = kCAFillRuleEvenOdd;
+    layer.mask = mask;
+    return v;
+}
+
+// The halo and drop shadow are drawn from shadowPath alone, then masked to
+// everything outside the glass, so no colour ever bleeds under the glass.
+static void shapeShadowView(NSView *v, NSRect glass, CGFloat radius, CGFloat spread) {
+    CALayer *layer = v.layer;
+    NSRect halo = NSInsetRect(glass, -spread, -spread);
+    CGPathRef haloPath = CGPathCreateWithRoundedRect(halo, radius + spread, radius + spread, NULL);
+    CGMutablePathRef outside = CGPathCreateMutable();
+    CGPathAddRect(outside, NULL, v.bounds);
+    CGPathAddRoundedRect(outside, NULL, glass, radius, radius);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    layer.shadowPath = haloPath;
+    CAShapeLayer *mask = (CAShapeLayer *)layer.mask;
+    mask.frame = v.bounds;
+    mask.path = outside;
+    [CATransaction commit];
+    CGPathRelease(haloPath);
+    CGPathRelease(outside);
 }
 
 static void buildPill(void) {
@@ -265,32 +438,127 @@ static void buildPill(void) {
     _pillRoot.wantsLayer = YES;
     _pill.contentView = _pillRoot;
 
-    _pillPanelView = [[NSView alloc] initWithFrame:NSMakeRect(kGlowPad, kGlowPad, kPillWidth, 20)];
-    _pillPanelView.wantsLayer = YES;
-    CALayer *layer = _pillPanelView.layer;
-    layer.cornerRadius = 12;
-    layer.backgroundColor = [[NSColor colorWithWhite:0.08 alpha:0.95] CGColor];
-    layer.borderColor = [cyan(0.6) CGColor];
-    layer.borderWidth = 1.5;
-    layer.shadowColor = [cyan(1.0) CGColor];
-    layer.shadowRadius = 8;
-    layer.shadowOpacity = 0.4;
-    layer.shadowOffset = CGSizeMake(0, 0);
-    [_pillRoot addSubview:_pillPanelView];
+    _pillDrop = makeShadowView([[NSColor blackColor] CGColor], 12, 0.28f, CGSizeMake(0, -8));
+    [_pillRoot addSubview:_pillDrop];
+    _pillGlow = makeShadowView([amber(1.0) CGColor], kGlowRestRadius, 0, CGSizeZero);
+    [_pillRoot addSubview:_pillGlow];
 
-    _pillLabel = [[NSTextField labelWithString:@""] retain];
+    NSRect panel = NSMakeRect(kGlowPad, kGlowPad, kPillWidth, kChipH + 2 * kPillPadY);
+    _pillContent = [[PillContentView alloc] initWithFrame:NSMakeRect(0, 0, panel.size.width, panel.size.height)];
+    _pillContent.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    if (@available(macOS 26.0, *)) {
+        // Regular (not Clear) glass: it adapts light/dark to the backdrop,
+        // which is what keeps the ink legible over white pages.
+        NSGlassEffectView *glass = [[NSGlassEffectView alloc] initWithFrame:panel];
+        glass.style = NSGlassEffectViewStyleRegular;
+        glass.contentView = _pillContent;
+        _pillGlass = glass;
+    } else {
+        NSVisualEffectView *fx = [[NSVisualEffectView alloc] initWithFrame:panel];
+        fx.material = NSVisualEffectMaterialHUDWindow;
+        fx.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        fx.state = NSVisualEffectStateActive;
+        fx.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        fx.wantsLayer = YES;
+        fx.layer.masksToBounds = YES;
+        [fx addSubview:_pillContent];
+        _pillGlass = fx;
+    }
+    [_pillRoot addSubview:_pillGlass];
+
+    _pillTint = [[PillTintView alloc] initWithFrame:_pillContent.bounds];
+    _pillTint.wantsLayer = YES;
+    _pillTint.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _pillTint.alphaValue = 0;
+    CAGradientLayer *wash = (CAGradientLayer *)_pillTint.layer;
+    // Warm top to deep amber bottom, like light caught in tinted glass. The
+    // colours are the ceiling's; rungs breathe the view's alpha below them.
+    wash.colors = @[
+        (id)[[NSColor colorWithRed:1.0 green:0.769 blue:0.361 alpha:0.62] CGColor],
+        (id)[[NSColor colorWithRed:1.0 green:0.612 blue:0.141 alpha:0.46] CGColor],
+        (id)[[NSColor colorWithRed:0.784 green:0.392 blue:0.0 alpha:0.40] CGColor],
+    ];
+    wash.locations = @[@0.0, @0.6, @1.0];
+    wash.startPoint = CGPointMake(0.5, 1.0); // layer y grows upward: top first
+    wash.endPoint = CGPointMake(0.5, 0.0);
+    [_pillContent addSubview:_pillTint];
+
+    _pillLabel = makePillLabel(_pillContent);
     _pillLabel.lineBreakMode = NSLineBreakByWordWrapping;
     [_pillLabel.cell setWraps:YES];
     [_pillLabel.cell setScrollable:NO];
-    [_pillPanelView addSubview:_pillLabel];
+
+    _pillChip = [[NSView alloc] initWithFrame:NSZeroRect];
+    _pillChip.wantsLayer = YES;
+    _pillChip.layer.cornerRadius = kChipH / 2;
+    _pillChip.layer.borderWidth = 0.5;
+    [_pillContent addSubview:_pillChip];
+    _pillTimeLabel = makePillLabel(_pillChip);
+
+    _pillOver = [[NSView alloc] initWithFrame:NSZeroRect];
+    _pillOver.wantsLayer = YES;
+    CALayer *over = _pillOver.layer;
+    over.cornerRadius = kOverH / 2;
+    over.backgroundColor = [overRed(1.0) CGColor];
+    over.borderColor = [[NSColor colorWithWhite:1.0 alpha:0.9] CGColor];
+    over.borderWidth = kOverRing;
+    over.shadowColor = [overRed(1.0) CGColor];
+    over.shadowRadius = 6;
+    over.shadowOpacity = 0.55f;
+    over.shadowOffset = CGSizeZero;
+    [_pillChip addSubview:_pillOver];
+    _pillOverLabel = makePillLabel(_pillOver);
+}
+
+// Applies the glass's current light/dark ink to text and chip. Colours never
+// change metrics, so this is safe to call on an appearance flip without a
+// relayout (and without moving the window).
+static void stylePill(void) {
+    if (!_pillLabel) return;
+    BOOL dark = pillIsDark();
+    _pillLabel.attributedStringValue = pillFocusAttr(dark);
+    _pillTimeLabel.attributedStringValue = pillTimeAttr(dark);
+    _pillChip.layer.backgroundColor = [[NSColor colorWithWhite:0 alpha:(dark ? 0.30 : 0.07)] CGColor];
+    _pillChip.layer.borderColor = dark ? [[NSColor colorWithWhite:1 alpha:0.22] CGColor]
+                                       : [[NSColor colorWithWhite:0 alpha:0.10] CGColor];
 }
 
 static void layoutPill(void) {
     if (!_pill) return;
-    NSAttributedString *attr = pillAttr();
-    CGFloat contentW = kPillWidth - 2 * kPillPadX;
-    CGFloat textH = measureAttrHeight(attr, contentW);
-    CGFloat panelH = textH + 2 * kPillPadY;
+    // Go owns the text/threshold rules; Cocoa keeps the clock and the minute
+    // timer. Copy the C-owned runs before freeing them here.
+    char *e = NULL, *b = NULL, *o = NULL;
+    if (_sinceEpoch > 0) goHudFormatPillTime(nowSec() - _sinceEpoch, _budgetNanos, &e, &b, &o);
+    [_pillElapsed release];
+    [_pillBudget release];
+    [_pillOverage release];
+    _pillElapsed = [(e ? [NSString stringWithUTF8String:e] : @"") retain];
+    _pillBudget = [(b ? [NSString stringWithUTF8String:b] : @"") retain];
+    _pillOverage = [(o ? [NSString stringWithUTF8String:o] : @"") retain];
+    free(e);
+    free(b);
+    free(o);
+
+    BOOL dark = pillIsDark();
+    NSAttributedString *focus = pillFocusAttr(dark);
+    NSAttributedString *time = pillTimeAttr(dark);
+    NSAttributedString *overText = pillOverAttr();
+    BOOL hasChip = _pillElapsed.length > 0;
+    BOOL hasOver = hasChip && _pillOverage.length > 0;
+
+    CGFloat timeW = hasChip ? ceil(time.size.width) : 0;
+    CGFloat overTextW = hasOver ? ceil(overText.size.width) : 0;
+    CGFloat overW = hasOver ? overTextW + 2 * (kOverPadX + kOverRing) : 0;
+    CGFloat chipW = 0;
+    if (hasChip) {
+        chipW = kChipPadX + timeW +
+                (hasOver ? (kChipGap - kOverRing) + overW + (kChipOverEndPad - kOverRing) : kChipPadX);
+    }
+    CGFloat rightEdge = hasChip ? (kPillGap + chipW + kPillPadRight) : kPillPadLeft;
+    CGFloat contentW = kPillWidth - kPillPadLeft - rightEdge;
+    CGFloat textH = measureAttrHeight(focus, contentW);
+    CGFloat panelH = MAX(kChipH + 2 * kPillPadY, textH + 2 * kPillTextPadY);
+    CGFloat radius = MIN(panelH / 2, kPillMaxRadius);
 
     NSRect v = [NSScreen mainScreen].visibleFrame;
     NSRect pf;
@@ -310,9 +578,35 @@ static void layoutPill(void) {
     _pillTop = NSMaxY(pf);
 
     [_pill setFrame:NSInsetRect(pf, -kGlowPad, -kGlowPad) display:YES];
-    _pillPanelView.frame = NSMakeRect(kGlowPad, kGlowPad, kPillWidth, panelH);
-    _pillLabel.attributedStringValue = attr;
-    _pillLabel.frame = NSMakeRect(kPillPadX, kPillPadY, contentW, textH);
+    NSRect glass = NSMakeRect(kGlowPad, kGlowPad, kPillWidth, panelH);
+    _pillDrop.frame = _pillRoot.bounds;
+    _pillGlow.frame = _pillRoot.bounds;
+    shapeShadowView(_pillDrop, glass, radius, 0);
+    shapeShadowView(_pillGlow, glass, radius, kGlowSpread);
+    _pillGlass.frame = glass;
+    if (@available(macOS 26.0, *)) {
+        ((NSGlassEffectView *)_pillGlass).cornerRadius = radius;
+    } else {
+        _pillGlass.layer.cornerRadius = radius;
+    }
+    _pillContent.frame = NSMakeRect(0, 0, kPillWidth, panelH);
+    _pillTint.frame = _pillContent.bounds;
+    _pillTint.layer.cornerRadius = radius;
+
+    _pillLabel.attributedStringValue = focus;
+    _pillLabel.frame = NSMakeRect(kPillPadLeft, round((panelH - textH) / 2), contentW, textH);
+
+    _pillChip.hidden = !hasChip;
+    _pillOver.hidden = !hasOver;
+    if (hasChip) {
+        _pillChip.frame = NSMakeRect(kPillWidth - kPillPadRight - chipW, round((panelH - kChipH) / 2), chipW, kChipH);
+        placeLabel(_pillTimeLabel, time, kChipPadX, kChipH / 2);
+    }
+    if (hasOver) {
+        _pillOver.frame = NSMakeRect(kChipPadX + timeW + (kChipGap - kOverRing), (kChipH - kOverH) / 2, overW, kOverH);
+        placeLabel(_pillOverLabel, overText, kOverRing + kOverPadX, kOverH / 2);
+    }
+    stylePill();
 }
 
 static void updateInteractivity(void) {
@@ -322,15 +616,19 @@ static void updateInteractivity(void) {
     _pill.ignoresMouseEvents = !interactive;
 }
 
+// The halo (shadow on _pillGlow's backing layer) and the wash (_pillTint's
+// alpha) breathe in one animation group, so the completion handler that
+// schedules the next half-cycle keeps the exact cadence of `period`.
 static void pillBreathe(int gen, BOOL expand) {
     if (_pill == nil || _pulseGen != gen || !_pulsing) return;
     GlowSpec g = glowForRung(_rung);
-    CALayer *layer = _pillPanelView.layer;
+    CALayer *glow = _pillGlow.layer;
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
         ctx.duration = g.period;
         ctx.allowsImplicitAnimation = YES;
-        layer.shadowRadius = expand ? g.radiusMax : g.radiusMin;
-        layer.shadowOpacity = expand ? g.opacityMax : g.opacityMin;
+        glow.shadowRadius = expand ? g.radiusMax : g.radiusMin;
+        glow.shadowOpacity = expand ? g.opacityMax : g.opacityMin;
+        _pillTint.animator.alphaValue = expand ? g.tintMax : g.tintMin;
     } completionHandler:^{
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
@@ -342,15 +640,14 @@ static void pillBreathe(int gen, BOOL expand) {
 static void endPulseNow(void) {
     _pulsing = NO;
     _pulseGen++;
-    if (_pillPanelView) {
-        CALayer *layer = _pillPanelView.layer;
-        layer.borderWidth = 1.5;
-        layer.borderColor = [cyan(0.6) CGColor];
+    if (_pillGlow) {
+        CALayer *glow = _pillGlow.layer;
         [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
             ctx.duration = 0.5;
             ctx.allowsImplicitAnimation = YES;
-            layer.shadowRadius = 8;
-            layer.shadowOpacity = 0.4;
+            glow.shadowRadius = kGlowRestRadius;
+            glow.shadowOpacity = 0;
+            _pillTint.animator.alphaValue = 0;
         }];
     }
     if (_pill && _focusSet && !_paused) {
@@ -368,12 +665,13 @@ static void endPulseNow(void) {
 static void killPulseSilent(void) {
     _pulsing = NO;
     _pulseGen++;
-    if (_pillPanelView) {
-        CALayer *layer = _pillPanelView.layer;
-        layer.borderWidth = 1.5;
-        layer.borderColor = [cyan(0.6) CGColor];
-        layer.shadowRadius = 8;
-        layer.shadowOpacity = 0.4;
+    if (_pillGlow) {
+        // Drop any in-flight breathe so the hidden pill comes back at rest.
+        [_pillGlow.layer removeAllAnimations];
+        [_pillTint.layer removeAllAnimations];
+        _pillGlow.layer.shadowRadius = kGlowRestRadius;
+        _pillGlow.layer.shadowOpacity = 0;
+        _pillTint.alphaValue = 0;
     }
 }
 
@@ -862,8 +1160,8 @@ void hudPulse(int rung, unsigned long long reminderID) {
         int gen = _pulseGen;
         _pulseShownAt = nowSec();
         GlowSpec g = glowForRung(_rung);
-        _pillPanelView.layer.borderColor = [cyan(g.borderAlpha) CGColor];
-        _pillPanelView.layer.borderWidth = g.borderWidth;
+        _pillTint.layer.borderColor = [amberRim(g.borderAlpha) CGColor];
+        _pillTint.layer.borderWidth = g.borderWidth;
         [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
             ctx.duration = 0.3;
             _pill.animator.alphaValue = 1.0;
@@ -1005,6 +1303,64 @@ static void snapshotView(NSView *view, NSString *path) {
     [rep release];
 }
 
+// CGWindowListCreateImage is obsoleted in the macOS 15+ SDK headers but still
+// exported at runtime, so it is looked up dynamically. Unlike screencapture
+// from an agent shell, it may capture this process's own windows without
+// Screen Recording permission: the composite shows the real glass, blur and
+// window alpha over our backdrop window (other apps' windows are omitted).
+typedef CGImageRef (*WindowListCreateImageFn)(CGRect, uint32_t, uint32_t, uint32_t);
+enum { kWindowListOnScreenOnly = 1 };
+
+static NSPanel *_testBackdrop = nil;
+
+void hudTestBackdrop(const char *imagePath) {
+    char *copy = strdup(imagePath ? imagePath : "");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *path = [NSString stringWithUTF8String:copy] ?: @"";
+        free(copy);
+        NSImage *img = [[[NSImage alloc] initWithContentsOfFile:path] autorelease];
+        if (!_pill || !img) {
+            fprintf(stderr, "[hud] backdrop: cannot load %s\n", path.UTF8String);
+            return;
+        }
+        if (!_testBackdrop) {
+            _testBackdrop = [[NSPanel alloc] initWithContentRect:NSZeroRect
+                                                       styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+                                                         backing:NSBackingStoreBuffered
+                                                           defer:NO];
+            _testBackdrop.level = NSStatusWindowLevel; // just under the pill
+            _testBackdrop.ignoresMouseEvents = YES;
+            _testBackdrop.hasShadow = NO;
+            _testBackdrop.contentView.wantsLayer = YES;
+            _testBackdrop.contentView.layer.contentsGravity = kCAGravityResizeAspectFill;
+        }
+        [_testBackdrop setFrame:_pill.frame display:NO];
+        _testBackdrop.contentView.layer.contents = img;
+        [_testBackdrop orderFrontRegardless];
+        [_pill orderFrontRegardless];
+    });
+}
+
+// Writes the window server's composite of the window's screen rect. Returns NO
+// when the capture API is unavailable or refuses.
+static BOOL snapshotWindow(NSWindow *win, NSString *path) {
+    WindowListCreateImageFn create =
+        (WindowListCreateImageFn)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
+    if (!create) return NO;
+    // Cocoa's origin is the primary screen's bottom-left; CG's is its top-left.
+    NSRect f = win.frame;
+    CGFloat primaryH = [NSScreen screens][0].frame.size.height;
+    CGRect cg = CGRectMake(f.origin.x, primaryH - NSMaxY(f), f.size.width, f.size.height);
+    CGImageRef img = create(cg, kWindowListOnScreenOnly, 0, 0);
+    if (!img) return NO;
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:img];
+    BOOL ok = [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+                  writeToFile:path atomically:YES];
+    [rep release];
+    CGImageRelease(img);
+    return ok;
+}
+
 void hudTestSnapshot(const char *pillPath, const char *takeoverPath) {
     char *p = strdup(pillPath ? pillPath : "");
     char *t = strdup(takeoverPath ? takeoverPath : "");
@@ -1013,7 +1369,11 @@ void hudTestSnapshot(const char *pillPath, const char *takeoverPath) {
         NSString *ts = [NSString stringWithUTF8String:t] ?: @"";
         free(p);
         free(t);
-        if (ps.length && _pill && _pill.isVisible) snapshotView(_pillRoot, ps);
+        // The pill is mostly glass, which a layer render can't draw, so it
+        // prefers the real composite and falls back to the layer render.
+        if (ps.length && _pill && _pill.isVisible && !snapshotWindow(_pill, ps)) {
+            snapshotView(_pillRoot, ps);
+        }
         if (ts.length && _tk && _tkVisible) snapshotView(_tkRoot, ts);
     });
 }

@@ -42,18 +42,29 @@ and takeover screen itself.
 
 ### Pill (both styles)
 
-- Dark rounded floating panel. Visual language lifted from
-  `/Users/shadowfax/code/clis/mac-notify/menubar/notify_darwin.m`
-  (white-0.08 background, cyan glow border, corner radius 12) but wider: ~460pt,
-  height auto-fit to text.
+- Liquid Glass capsule, its own look rather than mac-notify's (the
+  owner-approved Paper design "02 · Liquid"): a macOS 26
+  `NSGlassEffectView` (Regular style) ~460pt wide and 46pt tall on one line.
+  Longer focus text wraps and grows the pill downward as a rounded rect.
+  The glass adapts to whatever is behind it, with white ink over dark content
+  and near-black ink over light pages. Before macOS 26 it falls back to an
+  always-dark `NSVisualEffectView` (`.hudWindow`).
 - Always on top (`NSStatusWindowLevel + 1`), joins all Spaces, full-screen
   auxiliary, stationary.
-- Content: focus text + dim elapsed suffix `· 47m` (ticks once a minute).
-  An optional focus budget adds `· 9m / 45m`; after it is exceeded, append
-  a warm amber overage, e.g. `· 57m / 45m · +12m`. Only the overage is tinted.
+- Content: 18pt heavy focus text on the left, and on the right a nested time
+  chip with the bright elapsed time `47m` (ticks once a minute). An optional
+  focus budget adds a dim `/ 45m` to the chip (`9m / 45m`). Once the budget
+  is exceeded, a red `+12m` sub-chip with a white ring is appended
+  (`57m / 45m` then `+12m`). Only the overage is tinted.
   Elapsed remains wall-clock time since set, including paused/idle time.
-  Budgeted focuses show `· 0m / 45m` immediately; unbudgeted focuses keep
-  their existing first-minute display without a suffix. Budgets add no alerts.
+  Budgeted focuses show `0m / 45m` immediately. Unbudgeted focuses show no
+  chip during their first minute. Budgets add no alerts.
+- Glow (pulse ladder and passive glows alike): an amber halo outside the
+  glass plus an amber wash and rim inside it, breathing on the pulse cadence
+  below. Colour roles never overlap: amber only ever means "look at me", and
+  over-budget red is pushed red enough that it can't read as the glow.
+  Rung 0, the frequent passive nudge, stays gentle. Rung 2+'s glow is the hard
+  ceiling, and no rung may glow brighter or wider than it.
 - Idle: opacity = `idle_opacity` (default 0.30). Whenever the pill is visible,
   it accepts mouse input and can be dragged directly with no modifier key.
 - On drag end the new origin is reported to the daemon and persisted. Config
@@ -259,4 +270,7 @@ go build ./... && go vet ./... && go test ./...
   set → `focus stats` renders.
 - Visual: `go run ./hud/demo -pill -checkin -auto "f,type:next thing,enter"`
   (or `-pill -pulse 2 -takeover` for pulse style) with `-snap` self-snapshots —
-  `screencapture` from agent shells silently omits app windows.
+  `screencapture` from agent shells silently omits app windows. The pill
+  snapshot is the window server's own composite (real glass, glow and window
+  alpha). Add `-backdrop <image>` to put known dark or light content right
+  behind the pill, and `-idle-opacity 1` to see a resting pill at full strength.

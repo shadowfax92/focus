@@ -64,8 +64,8 @@ focus stats
 | `focus install` / `uninstall` | Manage the app bundle and LaunchAgent |
 | `focus daemon` | Run the daemon in the foreground for development |
 
-A budget adds elapsed / budget to the pill, such as `Fix setup · 9m / 45m`.
-Going over adds an amber suffix: `Fix setup · 57m / 45m · +12m`. Budgets must
+A budget adds elapsed / budget to the pill's time chip, such as `9m / 45m`.
+Going over adds a red `+12m` overage chip after `57m / 45m`. Budgets must
 be positive Go-style durations. Elapsed time still includes pauses and idle
 time; budgets survive daemon restarts and reset when a new focus starts.
 Leaving the budget out keeps the existing elapsed-only pill.
