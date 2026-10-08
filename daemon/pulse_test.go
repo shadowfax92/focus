@@ -277,3 +277,37 @@ func TestPulseStyleIgnoresPassivePulseInterval(t *testing.T) {
 		})
 	}
 }
+
+func TestFullscreenPulsePreservesFocusBudget(t *testing.T) {
+	start := time.Date(2026, 10, 8, 12, 0, 0, 0, time.Local)
+	now := start
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	d.cfg.Interval = 15 * time.Minute
+	if response := d.Handle(ipc.Request{Action: "set", Text: "budgeted focus", Budget: "45m"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	now = start.Add(5 * time.Minute)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(3 * time.Second)
+	if response := d.Handle(ipc.Request{Action: "ack"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	status := d.Handle(ipc.Request{Action: "status"}).Status
+	if status == nil || status.Budget != 45*time.Minute || status.ElapsedSeconds != 303 || status.SetAt == nil || !status.SetAt.Equal(start) {
+		t.Fatalf("passive glow changed budget/focus clock: %+v", status)
+	}
+	saved, err := LoadState(d.statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Budget != 45*time.Minute || saved.Machine.AwaitingAck {
+		t.Fatalf("saved budget/passive acknowledgement state = %+v", saved)
+	}
+	now = start.Add(15 * time.Minute)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	wantEventTypes(t, d, []string{"set", "pulse", "ack", "checkin"})
+}
