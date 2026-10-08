@@ -1328,7 +1328,10 @@ void hudTestBackdrop(const char *imagePath) {
                                                        styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
                                                          backing:NSBackingStoreBuffered
                                                            defer:NO];
-            _testBackdrop.level = NSStatusWindowLevel; // just under the pill
+            // Same level as the pill, ordered just under it, so another
+            // running focus pill (also at this level) can't slip between the
+            // backdrop and the glass and skew its light/dark sampling.
+            _testBackdrop.level = NSStatusWindowLevel + 1;
             _testBackdrop.ignoresMouseEvents = YES;
             _testBackdrop.hasShadow = NO;
             _testBackdrop.contentView.wantsLayer = YES;
