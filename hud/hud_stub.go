@@ -21,7 +21,11 @@ func clearFocusImpl() {
 	stub("clear_focus")
 }
 
-func pulseImpl(rung int) {
+func pulseImpl(rung int, reminderID uint64) {
+	if reminderID != 0 {
+		stub("pulse rung=%d reminder_id=%d", rung, reminderID)
+		return
+	}
 	stub("pulse rung=%d", rung)
 }
 

@@ -39,8 +39,8 @@ func clearFocusImpl() {
 	C.hudClearFocus()
 }
 
-func pulseImpl(rung int) {
-	C.hudPulse(C.int(rung))
+func pulseImpl(rung int, reminderID uint64) {
+	C.hudPulse(C.int(rung), C.ulonglong(reminderID))
 }
 
 func showTakeoverImpl(c TakeoverContent) {
@@ -83,6 +83,18 @@ func goHudAck(kind C.int, rung C.int, latency C.double, newText *C.char) {
 	}
 	events.OnAck(AckKind(kind), int(rung),
 		time.Duration(float64(latency)*float64(time.Second)), C.GoString(newText))
+}
+
+// The click echoes the animation's ID from the Cocoa thread, so an async
+// daemon handler can reject it after a newer reminder takes ownership.
+//
+//export goHudPassivePulseAck
+func goHudPassivePulseAck(kind C.int, reminderID C.ulonglong, latency C.double) {
+	if events.OnPassivePulseAck == nil {
+		return
+	}
+	events.OnPassivePulseAck(AckKind(kind), uint64(reminderID),
+		time.Duration(float64(latency)*float64(time.Second)))
 }
 
 //export goHudMoved

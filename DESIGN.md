@@ -232,9 +232,11 @@ Makefile, plist    build, Focus.app (LSUIElement), launchd
 
 - The daemon drives pill focus state in both reminder styles. In fullscreen
   style it owns separate glow and check-in deadlines, checking the latter
-  first. Passive glows call the existing `Pulse(0)` rendering without entering
-  the escalation state machine. Their optional ack window is ephemeral and
-  ends with the glow, pause, focus change, or check-in; it is never restored
+  first. Passive glows reuse the existing rung-0 rendering without entering
+  the escalation state machine. Each carries a process-local reminder ID
+  through Cocoa and back with an optional click, so a delayed glow click can
+  never acknowledge a newer glow or check-in. Their optional ack window is
+  ephemeral and ends with the glow, pause, focus change, or check-in; it is never restored
   as a pending reminder after daemon restart. Check-ins keep their existing
   interval and acknowledgement behavior.
 - `daemon` runs policy in goroutines and calls `hud.Run` **last, on the main

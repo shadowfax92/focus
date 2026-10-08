@@ -32,6 +32,7 @@ type Daemon struct {
 	// Passive glows accept optional clicks only while visible. This timestamp
 	// is ephemeral: a daemon restart must not restore a glow as a pending ack.
 	passivePulseAt time.Time
+	passivePulseID uint64
 	idleGuarded    bool
 	setFocusHUD    func(string, time.Time, time.Duration)
 	setPausedHUD   func(bool)
@@ -78,8 +79,18 @@ func Run(cfg config.Config) error {
 	hud.Run(d.hudConfig(), hud.Events{
 		OnAck: func(kind hud.AckKind, rung int, latency time.Duration, newText string) {
 			go func() {
-				if err := d.ack(kind.String(), newText, &latency, &rung); err != nil {
+				if err := d.ack(kind.String(), newText, &latency, &rung, nil); err != nil {
 					log.Printf("focus HUD ack: %v", err)
+				}
+			}()
+		},
+		OnPassivePulseAck: func(kind hud.AckKind, reminderID uint64, latency time.Duration) {
+			// This click may wait behind a scheduler tick. Carry its identity
+			// across the goroutine handoff so it cannot answer a newer screen.
+			go func() {
+				rung := 0
+				if err := d.ack(kind.String(), "", &latency, &rung, &reminderID); err != nil {
+					log.Printf("focus HUD glow ack: %v", err)
 				}
 			}()
 		},
@@ -280,7 +291,7 @@ func (d *Daemon) Handle(request ipc.Request) ipc.Response {
 		}
 		return ipc.Response{OK: true}
 	case "ack":
-		if err := d.ack(request.Kind, request.Text, nil, nil); err != nil {
+		if err := d.ack(request.Kind, request.Text, nil, nil, nil); err != nil {
 			return ipc.Response{Error: err.Error()}
 		}
 		return ipc.Response{OK: true}
@@ -396,7 +407,9 @@ func (d *Daemon) resumeLocked(now time.Time) error {
 // focus: it logs ack + done, then either sets newText as the next focus or —
 // when newText is empty — clears everything so no reminder fires until the
 // next `focus set`.
-func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung *int) error {
+// passivePulseID identifies a specific HUD glow; nil allows CLI and existing
+// takeover/ladder acknowledgements to target the currently pending reminder.
+func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung *int, passivePulseID *uint64) error {
 	if kind == "" {
 		kind = "on_task"
 	}
@@ -417,6 +430,9 @@ func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung 
 	previous := d.machine.State()
 	passive := !previous.AwaitingAck && d.directCheckins() && !d.passivePulseAt.IsZero() &&
 		now.Before(d.passivePulseAt.Add(d.passivePulseDuration()))
+	if passivePulseID != nil && (!passive || *passivePulseID != d.passivePulseID) {
+		return fmt.Errorf("passive glow acknowledgement is stale")
+	}
 	if !previous.AwaitingAck && !passive {
 		return fmt.Errorf("no reminder is awaiting acknowledgement")
 	}
@@ -505,9 +521,14 @@ func (d *Daemon) performLocked(action Action, now time.Time) error {
 			return err
 		}
 		if d.directCheckins() {
+			// IDs outlive individual glow windows but never the process. A
+			// queued click for an expired/replaced glow must not ack its successor.
+			d.passivePulseID++
 			d.passivePulseAt = now
+			hud.PassivePulse(d.passivePulseID)
+		} else {
+			hud.Pulse(action.Rung)
 		}
-		hud.Pulse(action.Rung)
 	case ActionTakeover:
 		if err := d.appendLocked(store.Event{TS: now, Type: "escalation", Rung: store.Rung(action.Rung)}); err != nil {
 			return err

@@ -311,3 +311,67 @@ func TestFullscreenPulsePreservesFocusBudget(t *testing.T) {
 	}
 	wantEventTypes(t, d, []string{"set", "pulse", "ack", "checkin"})
 }
+
+func TestFullscreenDelayedGlowAckCannotDismissCheckin(t *testing.T) {
+	start := time.Date(2026, 10, 8, 12, 0, 0, 0, time.Local)
+	now := start
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	d.cfg.Interval = 15 * time.Minute
+	d.cfg.PulseInterval = 14*time.Minute + 59*time.Second
+	if response := d.Handle(ipc.Request{Action: "set", Text: "near a check-in"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	now = start.Add(14*time.Minute + 59*time.Second)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	// The UI captured a glow click, but its goroutine has not acquired the
+	// daemon lock yet. The scheduler wins the lock and opens the check-in.
+	latency := 500 * time.Millisecond
+	rung := 0
+	reminderID := d.passivePulseID
+	delayedClick := func() error { return d.ack("on_task", "", &latency, &rung, &reminderID) }
+	now = start.Add(15 * time.Minute)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	checkin := d.machine.State()
+	deadline := d.nextTick
+	now = now.Add(time.Second)
+	if err := delayedClick(); err == nil {
+		t.Fatal("a delayed glow click acknowledged the new check-in")
+	}
+	wantEventTypes(t, d, []string{"set", "pulse", "checkin"})
+	if d.machine.State() != checkin || !d.nextTick.Equal(deadline) {
+		t.Fatal("a delayed glow click changed the check-in state or deadline")
+	}
+}
+
+func TestFullscreenGlowAckTargetsItsOwnGeneration(t *testing.T) {
+	start := time.Date(2026, 10, 8, 12, 0, 0, 0, time.Local)
+	now := start
+	d := fullscreenPulseDaemon(t, &now)
+	now = start.Add(5 * time.Minute)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	oldID := d.passivePulseID
+	now = start.Add(10 * time.Minute)
+	if err := d.poll(); err != nil {
+		t.Fatal(err)
+	}
+	currentID := d.passivePulseID
+	now = now.Add(time.Second)
+	latency := time.Second
+	rung := 0
+	if err := d.ack("on_task", "", &latency, &rung, &oldID); err == nil {
+		t.Fatal("a delayed old glow click acknowledged a newer glow")
+	}
+	if err := d.ack("drifted", "", &latency, &rung, &currentID); err != nil {
+		t.Fatalf("current HUD glow click was rejected: %v", err)
+	}
+	wantEventTypes(t, d, []string{"set", "pulse", "pulse", "ack"})
+	if !d.nextTick.Equal(start.Add(15 * time.Minute)) {
+		t.Fatal("current HUD glow click moved the check-in deadline")
+	}
+}
