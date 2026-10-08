@@ -80,6 +80,9 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("%s", response.Error)
 		}
 		out := cmd.OutOrStdout()
+		if response.Status != nil && response.Status.ConfigError != "" {
+			fmt.Fprintf(out, "config error: %s (running with previous config)\n", response.Status.ConfigError)
+		}
 		if response.Status == nil || response.Status.Text == "" {
 			fmt.Fprintln(out, "No focus set.")
 			return nil

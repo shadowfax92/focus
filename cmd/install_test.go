@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shadowfax92/focus/config"
 )
 
 func TestInstallUninstallRoundTrip(t *testing.T) {
@@ -37,6 +39,10 @@ func TestInstallUninstallRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(info), "<key>LSUIElement</key><true/>") {
 		t.Fatal("Info.plist does not declare LSUIElement")
+	}
+	contents, err := os.ReadFile(config.Path())
+	if err != nil || !strings.Contains(string(contents), "~2s") || !strings.Contains(string(contents), "focus restart") {
+		t.Fatalf("installed config header = %q, error = %v", contents, err)
 	}
 
 	if err := uninstall(); err != nil {

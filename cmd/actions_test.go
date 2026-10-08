@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shadowfax92/focus/config"
 	"github.com/shadowfax92/focus/ipc"
 )
 
@@ -173,5 +174,25 @@ func TestStatusShowsBudgetAndOverage(t *testing.T) {
 				t.Fatalf("status output unexpectedly contains %q: %q", tc.absent, output)
 			}
 		})
+	}
+}
+
+func TestStatusShowsConfigErrorWithoutAFocus(t *testing.T) {
+	output, _, err := runAction(t, []string{"status"}, ipc.Response{
+		OK: true, Status: &ipc.Status{ConfigError: "interval must be positive"},
+	})
+	if err != nil || !strings.Contains(output, "config error: interval must be positive (running with previous config)") || !strings.Contains(output, "No focus set.") {
+		t.Fatalf("status output = %q, error = %v", output, err)
+	}
+}
+
+func TestConfigPrintsRunningValuesAndReloadError(t *testing.T) {
+	cfg := config.Default()
+	cfg.Interval = 42 * time.Second
+	output, request, err := runAction(t, []string{"config"}, ipc.Response{
+		OK: true, Config: &cfg, ConfigError: "interval must be positive",
+	})
+	if err != nil || request.Action != "config" || !strings.Contains(output, "interval: 42s\n") || !strings.Contains(output, "# config error: interval must be positive (running with previous config)") {
+		t.Fatalf("config output = %q, request = %+v, error = %v", output, request, err)
 	}
 }

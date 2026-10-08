@@ -37,6 +37,8 @@ type Position struct {
 	X, Y   float64
 }
 
+// Config supplies ambient presentation at startup and reload. Each takeover
+// carries its own gate so config changes cannot re-arm an existing screen.
 type Config struct {
 	IdleOpacity   float64
 	Position      Position
@@ -77,6 +79,12 @@ func Run(cfg Config, ev Events) {
 	runImpl(cfg, ev)
 }
 
+// ApplyConfig queues presentation changes on the main thread. A custom
+// position stays owned by drag state; the gate travels with the next takeover.
+func ApplyConfig(cfg Config) {
+	applyConfigImpl(cfg)
+}
+
 // SetFocus shows the pill; since drives its existing wall-clock elapsed label.
 // A zero budget keeps the elapsed-only display. It does not change reminders.
 func SetFocus(text string, since time.Time, budget time.Duration) {
@@ -98,6 +106,11 @@ func Pulse(rung int) {
 // is reserved for the existing pulse ladder's OnAck path.
 func PassivePulse(reminderID uint64) {
 	pulseImpl(0, reminderID)
+}
+
+// StopPulse ends the current glow without dismissing an unanswered takeover.
+func StopPulse() {
+	stopPulseImpl()
 }
 
 // ShowTakeover presents the full-screen ack takeover.

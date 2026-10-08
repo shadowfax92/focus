@@ -1138,6 +1138,26 @@ void hudSetFocus(const char *text, double sinceEpoch, long long budgetNanos) {
     });
 }
 
+void hudApplyConfig(double idleOpacity, const char *posPreset, int pulseSeconds) {
+    // Go frees its C string as soon as this call returns; the main-queue
+    // block owns a copy until Cocoa can apply the update.
+    char *copy = strdup(posPreset ? posPreset : "top-center");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        _idleOpacity = idleOpacity;
+        _pulseSeconds = pulseSeconds > 0 ? pulseSeconds : 8;
+        NSString *preset = [NSString stringWithUTF8String:copy];
+        // A drag may have reached Cocoa before its Go callback acquires the
+        // daemon mutex. Honor local custom ownership too, so a queued reload
+        // cannot snap the pill back to a preset during that handoff.
+        if (![_posPreset isEqualToString:@"custom"] && ![preset isEqualToString:@"custom"]) {
+            [_posPreset release];
+            _posPreset = [preset retain];
+        }
+        free(copy);
+        refreshPillVisibility();
+    });
+}
+
 void hudClearFocus(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [_focusText release];
@@ -1200,6 +1220,15 @@ void hudDismissTakeover(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         dismissTakeoverMain();
         endPulseNow();
+    });
+}
+
+void hudStopPulse(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Cancel animation generations and their delayed completions before
+        // returning to ambient opacity. Takeover ownership is independent.
+        killPulseSilent();
+        refreshPillVisibility();
     });
 }
 

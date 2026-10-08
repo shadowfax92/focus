@@ -3,10 +3,12 @@ package cmd
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	focusconfig "github.com/shadowfax92/focus/config"
+	"github.com/shadowfax92/focus/ipc"
 )
 
 var configCmd = &cobra.Command{
@@ -14,15 +16,29 @@ var configCmd = &cobra.Command{
 	Short: "Print the resolved configuration",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := focusconfig.Load()
-		if err != nil {
-			return err
+		var cfg focusconfig.Config
+		out := cmd.OutOrStdout()
+		response, err := ipc.Send(ipc.Request{Action: "config"})
+		if err == nil && response.OK && response.Config != nil {
+			// The daemon's snapshot is authoritative while an edit is invalid
+			// or waiting for the next poll. Keep warnings valid YAML comments.
+			cfg = *response.Config
+			if response.ConfigError != "" {
+				message := strings.ReplaceAll(response.ConfigError, "\n", "\n# ")
+				fmt.Fprintf(out, "# config error: %s (running with previous config)\n", message)
+			}
+		} else {
+			// Offline use and older daemons still support inspecting the file.
+			cfg, err = focusconfig.Load()
+			if err != nil {
+				return err
+			}
 		}
 		contents, err := focusconfig.Marshal(cfg)
 		if err != nil {
 			return err
 		}
-		fmt.Print(string(contents))
+		fmt.Fprint(out, string(contents))
 		return nil
 	},
 }
