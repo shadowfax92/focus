@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,10 +56,109 @@ func wantEventTypes(t *testing.T, d *Daemon, want []string) {
 
 func recordPresentedFocus(d *Daemon) *[]string {
 	texts := []string{}
-	d.setFocusHUD = func(text string, _ time.Time) {
+	d.setFocusHUD = func(text string, _ time.Time, _ time.Duration) {
 		texts = append(texts, text)
 	}
 	return &texts
+}
+
+func TestBudgetSurvivesRestartPauseAndResume(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := config.Default()
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	d.now = func() time.Time { return started }
+	for _, request := range []ipc.Request{
+		{Action: "set", Text: "Fix setup", Budget: "45m"},
+		{Action: "pause", Duration: "1h"},
+	} {
+		if response := d.Handle(request); !response.OK {
+			t.Fatal(response.Error)
+		}
+	}
+	restarted, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.now = func() time.Time { return started.Add(57 * time.Minute) }
+	status := restarted.Handle(ipc.Request{Action: "status"}).Status
+	if status == nil || status.Budget != 45*time.Minute || status.ElapsedSeconds != 3420 || !status.Paused {
+		t.Fatalf("restored status = %+v, want 45m budget, 57m wall-clock elapsed, and paused", status)
+	}
+	var presentedBudget time.Duration
+	var presentedSince time.Time
+	restarted.setFocusHUD = func(_ string, since time.Time, budget time.Duration) {
+		presentedBudget, presentedSince = budget, since
+	}
+	restarted.restoreHUD()
+	if presentedBudget != 45*time.Minute || !presentedSince.Equal(started) {
+		t.Fatalf("restore presented budget %s since %v", presentedBudget, presentedSince)
+	}
+	if response := restarted.Handle(ipc.Request{Action: "resume"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	status = restarted.Handle(ipc.Request{Action: "status"}).Status
+	if status.Budget != 45*time.Minute || status.ElapsedSeconds != 3420 || status.Paused || presentedBudget != 45*time.Minute {
+		t.Fatalf("resumed status = %+v, presented budget = %s", status, presentedBudget)
+	}
+}
+
+func TestBudgetClearsWhenFocusChangesOrCompletes(t *testing.T) {
+	for _, request := range []ipc.Request{
+		{Action: "set", Text: "Next task"},
+		{Action: "done"},
+		{Action: "ack", Kind: "refocus", Text: "New focus"},
+		{Action: "ack", Kind: "done", Text: "Next focus"},
+		{Action: "ack", Kind: "done"},
+	} {
+		t.Run(request.Action+request.Kind+request.Text, func(t *testing.T) {
+			now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+			d := testDaemon(t, &now, config.StyleFullscreen)
+			if response := d.Handle(ipc.Request{Action: "set", Text: "Fix setup", Budget: "45m"}); !response.OK {
+				t.Fatal(response.Error)
+			}
+			now = now.Add(d.cfg.Interval)
+			if err := d.poll(); err != nil {
+				t.Fatal(err)
+			}
+			if response := d.Handle(request); !response.OK {
+				t.Fatal(response.Error)
+			}
+			if status := d.Handle(ipc.Request{Action: "status"}).Status; status.Budget != 0 {
+				t.Fatalf("new/cleared focus inherited old budget: %+v", status)
+			}
+			state, err := LoadState(d.statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Budget != 0 {
+				t.Fatalf("persisted focus inherited old budget: %+v", state)
+			}
+		})
+	}
+}
+
+func TestIPCRejectsInvalidBudgetWithoutChangingFocus(t *testing.T) {
+	for _, budget := range []string{"0", "-1m", "tomorrow", "999999999999999999h"} {
+		t.Run(budget, func(t *testing.T) {
+			now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+			d := testDaemon(t, &now, config.StyleFullscreen)
+			if response := d.Handle(ipc.Request{Action: "set", Text: "Original", Budget: "45m"}); !response.OK {
+				t.Fatal(response.Error)
+			}
+			response := d.Handle(ipc.Request{Action: "set", Text: "Replacement", Budget: budget})
+			if response.OK || !strings.Contains(response.Error, "budget must be a positive Go-style duration") {
+				t.Fatalf("invalid budget response = %+v", response)
+			}
+			status := d.Handle(ipc.Request{Action: "status"}).Status
+			if status.Text != "Original" || status.Budget != 45*time.Minute {
+				t.Fatalf("invalid budget changed focus: %+v", status)
+			}
+		})
+	}
 }
 
 func recordPresentedPause(d *Daemon) *[]bool {

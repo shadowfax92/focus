@@ -4,7 +4,7 @@
 void hudInit(double idleOpacity, const char *posPreset, double posX, double posY,
              int pulseSeconds);
 void hudRunApp(void);
-void hudSetFocus(const char *text, double sinceEpoch);
+void hudSetFocus(const char *text, double sinceEpoch, long long budgetNanos);
 void hudClearFocus(void);
 void hudPulse(int rung);
 void hudShowTakeover(const char *focusText, const char *quote,

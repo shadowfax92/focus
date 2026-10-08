@@ -13,7 +13,8 @@ callers when the work needs it.)
   self-snapshots; do not trust screenshots to prove a window is (in)visible.
 - Unix socket paths cap at ~104 bytes — keep test `$HOME` short (mktemp under
   /tmp), or the daemon fails to bind `~/.focus.sock`.
-- No git remote yet: commit locally on the current branch, skip pushing.
+- Git remote: github.com/shadowfax92/focus. Use the normal branch/PR flow;
+  merge only when the task authorizes it.
 - Reference implementations on this machine:
   - ../mac-notify — ipc/config/launchd/app-bundle patterns, overlay visuals
   - ../gh-stats — terminal stats/chart rendering style

@@ -39,6 +39,11 @@ and takeover screen itself.
 - Always on top (`NSStatusWindowLevel + 1`), joins all Spaces, full-screen
   auxiliary, stationary.
 - Content: focus text + dim elapsed suffix `· 47m` (ticks once a minute).
+  An optional focus budget adds `· 9m / 45m`; after it is exceeded, append
+  a warm amber overage, e.g. `· 57m / 45m · +12m`. Only the overage is tinted.
+  Elapsed remains wall-clock time since set, including paused/idle time.
+  Budgeted focuses show `· 0m / 45m` immediately; unbudgeted focuses keep
+  their existing first-minute display without a suffix. Budgets add no alerts.
 - Idle: opacity = `idle_opacity` (default 0.30). Whenever the pill is visible,
   it accepts mouse input and can be dragged directly with no modifier key.
 - On drag end the new origin is reported to the daemon and persisted. Config
@@ -136,9 +141,11 @@ Everything is derived at read time from the JSONL; no aggregate state.
 
 ```
 focus set "ship the onboarding PR"   # set/replace focus; pill appears
+focus set "Fix setup" 45m            # optional positive Go-style budget
+focus set "Write doc" 1h30m
 focus done                           # logs done, clears focus, hides pill
 focus clear                          # alias of done
-focus status                         # current focus + elapsed + rung + paused state
+focus status                         # focus + elapsed + budget/overage + rung + pause
 focus pause 45m                      # meeting mode
 focus resume
 focus ack [--drifted]                # ack from the CLI (default on_task)
@@ -170,7 +177,10 @@ quotes:
 ```
 
 Runtime state (survives daemon restart): `~/.local/state/focus/current.json` —
-current focus text, set-at timestamp, paused-until, saved custom position.
+current focus text, set-at timestamp, optional budget (`budget_ns`, exact
+nanoseconds), paused-until, saved custom position. Missing/zero budget means
+unbudgeted. A new focus (CLI set or inline refocus/next task) replaces any old
+budget; completion clears it. Pause, resume, and daemon restart preserve it.
 
 ## IPC
 
@@ -178,6 +188,8 @@ Unix socket `~/.focus.sock`, JSON request/response, one connection per command
 (same pattern as `/Users/shadowfax/code/clis/mac-notify/ipc/`). Verbs:
 `set, done, status, pause, resume, ack, ping`. The CLI prints a helpful error
 (`focus install` / `focus daemon`) when the daemon is down.
+`set` accepts an optional `budget` Go-style duration string; `status` returns
+the exact commitment as `budget_ns` when present.
 
 ## Architecture
 

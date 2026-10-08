@@ -1,0 +1,39 @@
+package hud
+
+import (
+	"testing"
+	"time"
+)
+
+func TestFormatPillTime(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		elapsed time.Duration
+		budget  time.Duration
+		suffix  string
+		overage string
+	}{
+		{name: "none", elapsed: 9 * time.Minute, suffix: "· 9m"},
+		{name: "none first minute", elapsed: 59 * time.Second},
+		{name: "none hours", elapsed: 90 * time.Minute, suffix: "· 1h 30m"},
+		{name: "none exact hour", elapsed: time.Hour, suffix: "· 1h"},
+		{name: "under", elapsed: 9 * time.Minute, budget: 45 * time.Minute, suffix: "· 9m / 45m"},
+		{name: "over", elapsed: 57 * time.Minute, budget: 45 * time.Minute, suffix: "· 57m / 45m", overage: "· +12m"},
+		{name: "at budget", elapsed: 45 * time.Minute, budget: 45 * time.Minute, suffix: "· 45m / 45m"},
+		{name: "first minute", budget: 45 * time.Minute, suffix: "· 0m / 45m"},
+		{name: "hour budget", elapsed: 9 * time.Minute, budget: 90 * time.Minute, suffix: "· 9m / 1h 30m"},
+		{name: "over hours", elapsed: 150 * time.Minute, budget: 45 * time.Minute, suffix: "· 2h 30m / 45m", overage: "· +1h 45m"},
+		{name: "over seconds", elapsed: 45*time.Minute + time.Second, budget: 45 * time.Minute, suffix: "· 45m / 45m", overage: "· +1s"},
+		{name: "over fractional second", elapsed: 45*time.Minute + time.Millisecond, budget: 45 * time.Minute, suffix: "· 45m / 45m", overage: "· +<1s"},
+		{name: "seconds budget", elapsed: 2 * time.Minute, budget: 90 * time.Second, suffix: "· 2m / 1m30s", overage: "· +30s"},
+		{name: "fractional budget", budget: 500 * time.Millisecond, suffix: "· 0m / 500ms"},
+		{name: "future start", elapsed: -time.Minute, budget: 45 * time.Minute, suffix: "· 0m / 45m"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			suffix, overage := FormatPillTime(tc.elapsed, tc.budget)
+			if suffix != tc.suffix || overage != tc.overage {
+				t.Fatalf("pill time = (%q, %q), want (%q, %q)", suffix, overage, tc.suffix, tc.overage)
+			}
+		})
+	}
+}

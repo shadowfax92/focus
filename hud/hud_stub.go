@@ -13,8 +13,8 @@ func runImpl(cfg Config, ev Events) {
 	select {}
 }
 
-func setFocusImpl(text string, since time.Time) {
-	stub("set_focus %q since=%s", text, since.Format(time.RFC3339))
+func setFocusImpl(text string, since time.Time, budget time.Duration) {
+	stub("set_focus %q since=%s budget=%s", text, since.Format(time.RFC3339), budget)
 }
 
 func clearFocusImpl() {
