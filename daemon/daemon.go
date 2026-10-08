@@ -36,6 +36,9 @@ type Daemon struct {
 	// deferred by reload; deriving them from that deadline would drift.
 	tickWindow  time.Time
 	pulseWindow time.Time
+	// An idle-policy edit can release overdue reminders. Give that change a
+	// scheduler beat of grace without moving either cadence deadline.
+	reloadGraceUntil time.Time
 	// Passive glows accept optional clicks only while visible. This timestamp
 	// is ephemeral: a daemon restart must not restore a glow as a pending ack.
 	passivePulseAt    time.Time
@@ -144,6 +147,7 @@ func (d *Daemon) directCheckins() bool { return d.cfg.ReminderStyle != config.St
 // check-in. The passive glow has its own deadline so it cannot delay check-ins
 // or feed the pulse-style escalation machine. Zero means no passive cadence.
 func (d *Daemon) resetScheduleLocked(now time.Time) {
+	d.reloadGraceUntil = time.Time{}
 	d.tickWindow, d.pulseWindow = now, now
 	d.nextTick = now.Add(d.cfg.Interval)
 	d.nextPulse = time.Time{}
@@ -235,6 +239,9 @@ func (d *Daemon) poll() error {
 		// A guard left armed here would greet the next `focus set` with an
 		// instant bogus welcome-back reminder.
 		d.idleGuarded = false
+		return nil
+	}
+	if now.Before(d.reloadGraceUntil) {
 		return nil
 	}
 	if d.cfg.IdlePauseMinutes > 0 {

@@ -61,8 +61,12 @@ func (d *Daemon) rescheduleConfigLocked(cfg config.Config, now time.Time) {
 			hud.StopPulse()
 		}
 	}
-	if cfg.IdlePauseMinutes == 0 {
+	if cfg.IdlePauseMinutes != old.IdlePauseMinutes && d.idleGuarded {
+		// Reclassifying an idle stretch is not user activity. Forget the old
+		// threshold's latch and let the next poll evaluate the new policy;
+		// overdue glows/check-ins wait a beat rather than firing on the save.
 		d.idleGuarded = false
+		d.reloadGraceUntil = now.Add(schedulerPollInterval)
 	}
 }
 
@@ -117,7 +121,10 @@ func (w *configWatcher) poll() (config.Config, bool, error) {
 		// parse error, and retry the new identity on the next poll.
 		return config.Config{}, false, nil
 	}
-	w.last, w.initialized = after, true
+	// Only successful loads consume the fingerprint. A transient read error
+	// (e.g. descriptor exhaustion) can recover without another file edit.
+	// Invalid files are retried too; the daemon logs only error transitions.
+	w.last, w.initialized = after, loadErr == nil
 	return cfg, true, loadErr
 }
 

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -378,4 +379,74 @@ func TestConfigReloadPreservesOpenTakeover(t *testing.T) {
 		t.Fatalf("style edit invalidated takeover acknowledgement: %s", response.Error)
 	}
 	wantEventTypes(t, d, []string{"set", "checkin", "ack"})
+}
+
+func TestConfigReloadIdleThresholdDoesNotFabricateReturn(t *testing.T) {
+	for _, threshold := range []int{0, 2, 10} {
+		t.Run((time.Duration(threshold) * time.Minute).String(), func(t *testing.T) {
+			start := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+			now := start
+			d := fullscreenPulseDaemon(t, &now)
+			now = start.Add(6 * time.Minute)
+			idle := (6 * time.Minute).Seconds()
+			d.idle = func() float64 { return idle }
+			if err := d.poll(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			cfg := d.cfg
+			cfg.IdlePauseMinutes = threshold
+			if err := config.SaveTo(path, cfg); err != nil {
+				t.Fatal(err)
+			}
+			d.reloadConfig(newConfigWatcher(path))
+			if !d.nextTick.Equal(start.Add(15*time.Minute)) || !d.nextPulse.Equal(start.Add(5*time.Minute)) {
+				t.Fatal("idle policy edit changed cadence deadlines")
+			}
+			if err := d.poll(); err != nil {
+				t.Fatal(err)
+			}
+			wantEventTypes(t, d, []string{"set"})
+			now = now.Add(time.Second)
+			if err := d.poll(); err != nil {
+				t.Fatal(err)
+			}
+			if threshold == 2 {
+				wantEventTypes(t, d, []string{"set"}) // Still guarded under the new policy.
+				idle = 0
+				now = now.Add(time.Second)
+				if err := d.poll(); err != nil {
+					t.Fatal(err)
+				}
+				wantEventTypes(t, d, []string{"set", "idle_return", "checkin"})
+			} else {
+				// A previously suppressed glow is now allowed, after the grace
+				// beat, without manufacturing a welcome-back screen/history.
+				wantEventTypes(t, d, []string{"set", "pulse"})
+			}
+		})
+	}
+}
+
+func TestConfigReloadRetriesTransientReadFailure(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	d := fullscreenPulseDaemon(t, &now)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	replaceConfig(t, path, "interval: 15m\n")
+	watcher := newConfigWatcher(path)
+	d.reloadConfig(watcher)
+	replaceConfig(t, path, "interval: 10m\n")
+	watcher.load = func(path string) (config.Config, error) {
+		return config.Config{}, &os.PathError{Op: "open", Path: path, Err: syscall.EMFILE}
+	}
+	d.reloadConfig(watcher)
+	if d.cfg.Interval != 15*time.Minute || d.status().ConfigError == "" {
+		t.Fatal("transient read failure lost the previous config or its error")
+	}
+	watcher.load = config.LoadFrom
+	d.reloadConfig(watcher)
+	response := d.Handle(ipc.Request{Action: "config"})
+	if response.Config.Interval != 10*time.Minute || response.ConfigError != "" {
+		t.Fatalf("read recovery needed another save: %+v", response)
+	}
 }

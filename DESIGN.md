@@ -219,7 +219,9 @@ errors keep the last good config and are logged. `focus status` and
 `focus config` report `config error: ... (running with previous config)`
 until a valid load clears it, even without an active focus. The config IPC
 verb returns the daemon's active snapshot; offline/older-daemon CLI use falls
-back to resolving the file.
+back to resolving the file. Failed loads stay eligible for retry even when
+the file is unchanged, so transient I/O failures recover automatically;
+duplicate error messages are not logged on every poll.
 
 The scheduler retains separate window origins for the interval and passive
 glow timers. Reload changes a deadline only when its cadence changes:
@@ -240,6 +242,10 @@ glow timers. Reload changes a deadline only when its cadence changes:
   until answered. Quote, gate, escalation, idle guard, and glow-duration
   values govern subsequent behavior; a visible glow keeps its original
   duration and acknowledgement expiry.
+- Changing an armed idle guard's threshold clears its previous latch and
+  re-evaluates the idle stretch under the new policy. That edit cannot count
+  as user activity or fabricate an `idle_return`; any newly allowed overdue
+  reminder waits one scheduler beat without changing cadence deadlines.
 
 `hud.ApplyConfig` copies its inputs across the cgo/async handoff and applies
 opacity and future glow duration on Cocoa's main queue. The next takeover
