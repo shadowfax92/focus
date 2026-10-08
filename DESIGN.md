@@ -174,7 +174,8 @@ focus stats [--detailed | -d] [--json]
 focus stats --days N [--json]
 focus stats weeks [--json]
 focus quotes add "..." | list | rm <n>
-focus config                         # print resolved config
+focus config                         # print active config (disk when offline)
+focus restart                        # restart launchd; state survives
 focus install | uninstall            # app bundle + launchd agent
 focus daemon                         # run daemon in foreground (dev)
 ```
@@ -202,6 +203,64 @@ quotes:
 be nonnegative and is ignored by `reminder_style: pulse`. Existing configs
 that omit it inherit the 5m default; `focus config` prints the resolved value.
 
+### Automatic reload and restart
+
+Config edits apply automatically within ~2s. A dedicated daemon goroutine
+polls `os.Stat` every **2s**, comparing mtime, size, permissions, and file identity
+(inode on macOS), so rename-style editor saves are detected without a filesystem
+watch dependency. Startup and reload use the same `config.LoadFrom` validation.
+The watcher stats again after reading; a file replaced/modified during the
+load is retried on the next poll, rather than publishing a stale config or
+transient parse error. Missing files resolve to defaults, matching startup.
+
+File I/O runs outside the daemon mutex; publishing a validated config shares
+the scheduler/IPC/HUD-input lock. Invalid YAML, invalid values, or read/stat
+errors keep the last good config and are logged. `focus status` and
+`focus config` report `config error: ... (running with previous config)`
+until a valid load clears it, even without an active focus. The config IPC
+verb returns the daemon's active snapshot; offline/older-daemon CLI use falls
+back to resolving the file. Failed loads stay eligible for retry even when
+the file is unchanged, so transient I/O failures recover automatically;
+duplicate error messages are not logged on every poll.
+
+The scheduler retains separate window origins for the interval and passive
+glow timers. Reload changes a deadline only when its cadence changes:
+
+- The new deadline is `window origin + new duration`, preserving elapsed
+  time. If already elapsed, it is deferred to `reload time + 1s`; only a
+  subsequent scheduler beat presents the reminder. Reload itself never
+  shows a check-in or starts a glow.
+- Unchanged cadence keys leave both deadlines untouched, including a
+  quote-only edit. Changing `interval` also re-evaluates whether passive
+  glows are enabled, without restarting an otherwise unchanged glow timer.
+- Setting `pulse_interval: 0` or `>= interval` cancels passive cadence and
+  immediately ends its current glow/optional ack window. Enabling nudges
+  starts a full new glow window without moving the primary deadline.
+- A style change uses the new style for the next reminder without moving
+  the primary deadline. An active ladder pulse is retired so its mandatory
+  ack/rung state cannot leak into fullscreen nudges. An open takeover stays
+  until answered. Quote, gate, escalation, idle guard, and glow-duration
+  values govern subsequent behavior; a visible glow keeps its original
+  duration and acknowledgement expiry.
+- Changing an armed idle guard's threshold clears its previous latch and
+  re-evaluates the idle stretch under the new policy. That edit cannot count
+  as user activity or fabricate an `idle_return`; any newly allowed overdue
+  reminder waits one scheduler beat without changing cadence deadlines.
+
+`hud.ApplyConfig` copies its inputs across the cgo/async handoff and applies
+opacity and future glow duration on Cocoa's main queue. The next takeover
+carries its configured gate explicitly, without restarting an existing gate.
+Preset position changes also run there; a saved dragged `custom` position
+wins, both under the daemon lock and on the UI thread if the drag callback is
+still in flight. `hud.StopPulse` cancels glow animation generations without
+dismissing an unanswered takeover.
+
+`focus restart` checks for the installed/loaded LaunchAgent and runs
+`launchctl kickstart -k gui/<uid>/com.focus.daemon`, leaving persisted state
+and history in place. `focus install` (and foreground startup) exclusively
+creates a commented default config when missing. The header explains reload
+within ~2s and `focus restart`; existing configs and their comments are kept.
+
 Runtime state (survives daemon restart): `~/.local/state/focus/current.json` —
 current focus text, set-at timestamp, optional budget (`budget_ns`, exact
 nanoseconds), paused-until, saved custom position. Missing/zero budget means
@@ -212,7 +271,7 @@ budget; completion clears it. Pause, resume, and daemon restart preserve it.
 
 Unix socket `~/.focus.sock`, JSON request/response, one connection per command
 (same pattern as `/Users/shadowfax/code/clis/mac-notify/ipc/`). Verbs:
-`set, done, status, pause, resume, ack, ping`. The CLI prints a helpful error
+`set, done, status, config, pause, resume, ack, ping`. The CLI prints a helpful error
 (`focus install` / `focus daemon`) when the daemon is down.
 `set` accepts an optional `budget` Go-style duration string; `status` returns
 the exact commitment as `budget_ns` when present.
@@ -250,7 +309,7 @@ Makefile, plist    build, Focus.app (LSUIElement), launchd
   ephemeral and ends with the glow, pause, focus change, or check-in; it is never restored
   as a pending reminder after daemon restart. Check-ins keep their existing
   interval and acknowledgement behavior.
-- `daemon` runs policy in goroutines and calls `hud.Run` **last, on the main
+- `daemon` runs scheduling, config polling, and IPC in goroutines and calls `hud.Run` **last, on the main
   goroutine** (main.go already locks it to the OS thread).
 - go.mod is pinned (cobra, yaml.v3, fatih/color); no new deps.
 - Non-darwin / cgo-disabled builds get headless no-op `hud` stubs that log

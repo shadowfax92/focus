@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/shadowfax92/focus/config"
 )
 
 func SocketPath() string {
@@ -26,6 +28,7 @@ type Request struct {
 
 // Status is the daemon's current focus snapshot, with wall-clock elapsed time.
 type Status struct {
+	ConfigError    string     `json:"config_error,omitempty"`
 	Text           string     `json:"text,omitempty"`
 	SetAt          *time.Time `json:"set_at,omitempty"`
 	ElapsedSeconds int64      `json:"elapsed_seconds,omitempty"`
@@ -40,8 +43,13 @@ type Status struct {
 	PausedUntil *time.Time    `json:"paused_until,omitempty"`
 }
 
+// Response returns one command result. Config and its reload error are one
+// snapshot, so a client cannot report new values alongside an older error.
 type Response struct {
 	OK     bool    `json:"ok"`
 	Error  string  `json:"error,omitempty"`
 	Status *Status `json:"status,omitempty"`
+	// Config is the daemon's last good snapshot, rather than a fresh disk load.
+	Config      *config.Config `json:"config,omitempty"`
+	ConfigError string         `json:"config_error,omitempty"`
 }

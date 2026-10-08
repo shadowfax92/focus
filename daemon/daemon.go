@@ -15,27 +15,40 @@ import (
 	"github.com/shadowfax92/focus/store"
 )
 
+const schedulerPollInterval = time.Second
+
 // Daemon owns persisted focus state and reminder policy. Its mutex serializes
-// IPC, scheduler, and HUD input before presentation is queued to Cocoa.
+// IPC, scheduler, config publication, and HUD input before queuing to Cocoa.
 // Reminder deadlines and passive glows belong to this process, not persisted state.
 type Daemon struct {
-	mu        sync.Mutex
-	cfg       config.Config
-	events    *store.Store
-	statePath string
-	state     State
-	machine   *Machine
-	now       func() time.Time
-	idle      func() float64
-	nextTick  time.Time
-	nextPulse time.Time
+	mu          sync.Mutex
+	cfg         config.Config
+	configError string // Last failed reload; cfg remains the last good snapshot.
+	events      *store.Store
+	statePath   string
+	state       State
+	machine     *Machine
+	now         func() time.Time
+	idle        func() float64
+	nextTick    time.Time
+	nextPulse   time.Time
+	// Window origins survive cadence edits, including a shortened deadline
+	// deferred by reload; deriving them from that deadline would drift.
+	tickWindow  time.Time
+	pulseWindow time.Time
+	// An idle-policy edit can release overdue reminders. Give that change a
+	// scheduler beat of grace without moving either cadence deadline.
+	reloadGraceUntil time.Time
 	// Passive glows accept optional clicks only while visible. This timestamp
 	// is ephemeral: a daemon restart must not restore a glow as a pending ack.
-	passivePulseAt time.Time
-	passivePulseID uint64
-	idleGuarded    bool
-	setFocusHUD    func(string, time.Time, time.Duration)
-	setPausedHUD   func(bool)
+	passivePulseAt    time.Time
+	passivePulseUntil time.Time // The lifetime chosen when this glow was shown.
+	passivePulseID    uint64
+	idleGuarded       bool
+	setFocusHUD       func(string, time.Time, time.Duration)
+	setPausedHUD      func(bool)
+	applyConfigHUD    func(hud.Config)
+	stopPulseHUD      func()
 }
 
 func New(cfg config.Config) (*Daemon, error) {
@@ -68,15 +81,22 @@ func Run(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	defer listener.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Capture startup presentation before the watcher can publish a new config.
+	// Later HUD changes are queued to Cocoa after its main-thread initialization.
+	initialHUD := d.hudConfig()
 	go func() {
 		if err := ipc.Serve(listener, d.Handle); err != nil {
 			log.Printf("focus IPC server stopped: %v", err)
 		}
 	}()
-	go d.loop(context.Background())
+	go d.loop(ctx)
+	go d.watchConfig(ctx, newConfigWatcher(config.Path()))
 	go d.restoreHUD()
 
-	hud.Run(d.hudConfig(), hud.Events{
+	hud.Run(initialHUD, hud.Events{
 		OnAck: func(kind hud.AckKind, rung int, latency time.Duration, newText string) {
 			go func() {
 				if err := d.ack(kind.String(), newText, &latency, &rung, nil); err != nil {
@@ -102,6 +122,10 @@ func Run(cfg config.Config) error {
 func (d *Daemon) hudConfig() hud.Config {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.hudConfigLocked()
+}
+
+func (d *Daemon) hudConfigLocked() hud.Config {
 	return hud.Config{
 		IdleOpacity: d.cfg.IdleOpacity,
 		Position: hud.Position{
@@ -123,10 +147,12 @@ func (d *Daemon) directCheckins() bool { return d.cfg.ReminderStyle != config.St
 // check-in. The passive glow has its own deadline so it cannot delay check-ins
 // or feed the pulse-style escalation machine. Zero means no passive cadence.
 func (d *Daemon) resetScheduleLocked(now time.Time) {
+	d.reloadGraceUntil = time.Time{}
+	d.tickWindow, d.pulseWindow = now, now
 	d.nextTick = now.Add(d.cfg.Interval)
 	d.nextPulse = time.Time{}
 	d.passivePulseAt = time.Time{}
-	if d.directCheckins() && d.cfg.PulseInterval > 0 && d.cfg.PulseInterval < d.cfg.Interval {
+	if passiveCadence(d.cfg) {
 		d.nextPulse = now.Add(d.cfg.PulseInterval)
 	}
 }
@@ -183,7 +209,7 @@ func (d *Daemon) restoreHUD() {
 }
 
 func (d *Daemon) loop(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(schedulerPollInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -213,6 +239,9 @@ func (d *Daemon) poll() error {
 		// A guard left armed here would greet the next `focus set` with an
 		// instant bogus welcome-back reminder.
 		d.idleGuarded = false
+		return nil
+	}
+	if now.Before(d.reloadGraceUntil) {
 		return nil
 	}
 	if d.cfg.IdlePauseMinutes > 0 {
@@ -245,6 +274,7 @@ func (d *Daemon) poll() error {
 		return d.performLocked(action, now)
 	}
 	if !d.nextPulse.IsZero() && !now.Before(d.nextPulse) {
+		d.pulseWindow = now
 		d.nextPulse = now.Add(d.cfg.PulseInterval)
 		if !d.machine.State().InTakeover {
 			// Passive rung-0 nudges never enter the acknowledgement ladder.
@@ -298,6 +328,12 @@ func (d *Daemon) Handle(request ipc.Request) ipc.Response {
 	case "status":
 		status := d.status()
 		return ipc.Response{OK: true, Status: &status}
+	case "config":
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		cfg := d.cfg
+		cfg.Quotes = append([]string(nil), cfg.Quotes...)
+		return ipc.Response{OK: true, Config: &cfg, ConfigError: d.configError}
 	default:
 		return ipc.Response{Error: "unknown action"}
 	}
@@ -429,7 +465,7 @@ func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung 
 	now := d.now()
 	previous := d.machine.State()
 	passive := !previous.AwaitingAck && d.directCheckins() && !d.passivePulseAt.IsZero() &&
-		now.Before(d.passivePulseAt.Add(d.passivePulseDuration()))
+		now.Before(d.passivePulseUntil)
 	if passivePulseID != nil && (!passive || *passivePulseID != d.passivePulseID) {
 		return fmt.Errorf("passive glow acknowledgement is stale")
 	}
@@ -494,6 +530,7 @@ func (d *Daemon) status() ipc.Status {
 	defer d.mu.Unlock()
 	now := d.now()
 	status := ipc.Status{
+		ConfigError: d.configError,
 		Text:        d.state.FocusText,
 		Budget:      d.state.Budget,
 		Rung:        d.machine.State().Rung,
@@ -525,6 +562,7 @@ func (d *Daemon) performLocked(action Action, now time.Time) error {
 			// queued click for an expired/replaced glow must not ack its successor.
 			d.passivePulseID++
 			d.passivePulseAt = now
+			d.passivePulseUntil = now.Add(d.passivePulseDuration())
 			hud.PassivePulse(d.passivePulseID)
 		} else {
 			hud.Pulse(action.Rung)

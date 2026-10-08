@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/shadowfax92/focus/config"
 	"github.com/shadowfax92/focus/ipc"
 )
 
@@ -97,6 +98,9 @@ func install() error {
 		return err
 	}
 	if err := installCLISymlink(); err != nil {
+		return err
+	}
+	if err := config.EnsureDefault(); err != nil {
 		return err
 	}
 	_ = bootout()

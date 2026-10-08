@@ -29,6 +29,14 @@ func runImpl(cfg Config, ev Events) {
 	C.hudRunApp() // never returns
 }
 
+func applyConfigImpl(cfg Config) {
+	preset := C.CString(cfg.Position.Preset)
+	defer C.free(unsafe.Pointer(preset))
+	// BreathingGate is policy, passed explicitly with ShowTakeover; changing
+	// it must not re-arm keys or restart a gate on an already visible screen.
+	C.hudApplyConfig(C.double(cfg.IdleOpacity), preset, C.int(cfg.PulseSeconds))
+}
+
 func setFocusImpl(text string, since time.Time, budget time.Duration) {
 	ct := C.CString(text)
 	defer C.free(unsafe.Pointer(ct))
@@ -42,6 +50,8 @@ func clearFocusImpl() {
 func pulseImpl(rung int, reminderID uint64) {
 	C.hudPulse(C.int(rung), C.ulonglong(reminderID))
 }
+
+func stopPulseImpl() { C.hudStopPulse() }
 
 func showTakeoverImpl(c TakeoverContent) {
 	cf := C.CString(c.FocusText)

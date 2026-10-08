@@ -13,6 +13,10 @@ func runImpl(cfg Config, ev Events) {
 	select {}
 }
 
+func applyConfigImpl(cfg Config) {
+	stub("apply_config cfg=%+v", cfg)
+}
+
 func setFocusImpl(text string, since time.Time, budget time.Duration) {
 	stub("set_focus %q since=%s budget=%s", text, since.Format(time.RFC3339), budget)
 }
@@ -32,6 +36,8 @@ func pulseImpl(rung int, reminderID uint64) {
 func showTakeoverImpl(c TakeoverContent) {
 	stub("takeover focus=%q quote=%q mirror=%q rung=%d gate=%s", c.FocusText, c.Quote, c.MirrorLine, c.Rung, c.Gate)
 }
+
+func stopPulseImpl() { stub("stop_pulse") }
 
 func dismissTakeoverImpl() {
 	stub("dismiss_takeover")

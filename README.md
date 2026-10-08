@@ -60,7 +60,8 @@ focus stats
 | `focus stats --days N` | Render a daily distraction bar chart |
 | `focus stats weeks` | Show week-over-week trends and sparklines |
 | `focus quotes add\|list\|rm` | Manage takeover quotes |
-| `focus config` | Print the resolved configuration |
+| `focus config` | Print the running configuration, or resolve the file when offline |
+| `focus restart` | Restart the installed launchd service, preserving focus state |
 | `focus install` / `uninstall` | Manage the app bundle and LaunchAgent |
 | `focus daemon` | Run the daemon in the foreground for development |
 
@@ -115,6 +116,26 @@ breathing_gate_seconds: 3    # escalation takeovers; check-ins arm when faded in
 ```
 
 `interval` and `pulse_interval` use Go-style durations. `interval` drives direct check-ins in fullscreen style and pulse-ladder ticks in pulse style. `pulse_interval` must be nonnegative; it defaults to 5m when omitted, and `0` or a value at least as long as `interval` disables fullscreen glows. Pulse style ignores it and keeps its existing cadence. The idle guard, pause, and an empty focus suppress both reminders. Set, resume, and check-in acknowledgements restart both timers. Position presets are `top-center`, `top-right`, `top-left`, and `custom`; the visible pill is directly draggable with no modifier key, and dragging it persists a custom position. A click without movement between reminders does nothing.
+
+Edit `~/.config/focus/config.yaml` and save: changes apply automatically within
+~2s, including saves that replace the file by rename. Invalid edits keep the
+last good configuration; `focus status` and `focus config` show the error until
+a valid save clears it. While the daemon runs, `focus config` prints its active
+values, including during that short polling delay.
+
+Cadence changes retain time already spent in the current window. A shorter
+interval takes effect in that window; if it has already elapsed, the next
+scheduler beat after a 1s grace period handles it. Saving never fires a reminder
+itself. Quote-only edits leave the timers alone. Disabling `pulse_interval`
+stops the current passive glow and future nudges. Opacity and preset positions
+update immediately on reload, while a dragged custom position stays put.
+Reminder style changes apply to the next reminder; an open check-in stays up
+until answered.
+
+Use `focus restart` as a fallback to restart the installed launchd service.
+Current focus, budget, pause, custom position, and history survive the restart.
+`focus install` creates a commented starter config only when none exists, so
+reinstalling preserves your existing config and comments.
 
 ## Local data
 

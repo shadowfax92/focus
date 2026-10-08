@@ -125,3 +125,28 @@ func TestPulseIntervalRejectsInvalidDurations(t *testing.T) {
 		t.Fatal("resolved config accepted a negative pulse_interval")
 	}
 }
+
+func TestEnsureDefaultExplainsReloadWithoutRewritingExistingConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := EnsureDefault(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(Path())
+	if err != nil || !strings.Contains(string(contents), "~2s") || !strings.Contains(string(contents), "focus restart") {
+		t.Fatalf("fresh config header = %q, error = %v", contents, err)
+	}
+	if _, err := Load(); err != nil {
+		t.Fatalf("fresh config is invalid: %v", err)
+	}
+	want := "# Owner's comment\ninterval: 42m\n"
+	if err := os.WriteFile(Path(), []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureDefault(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err = os.ReadFile(Path())
+	if err != nil || string(contents) != want {
+		t.Fatalf("existing config changed to %q, error = %v", contents, err)
+	}
+}

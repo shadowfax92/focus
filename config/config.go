@@ -76,6 +76,36 @@ func Path() string {
 
 func Load() (Config, error) { return LoadFrom(Path()) }
 
+// EnsureDefault creates the documented starter file for install/foreground
+// startup. Exclusive creation preserves existing user comments and edits,
+// including a file created by an editor while installation is in progress.
+func EnsureDefault() error {
+	path := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("create config: %w", err)
+	}
+	contents, err := Marshal(Default())
+	if err != nil {
+		file.Close()
+		return err
+	}
+	header := "# Focus configuration. Edits apply automatically within ~2s.\n" +
+		"# Invalid edits keep the previous config; see focus status or focus config.\n" +
+		"# Use focus restart to restart the installed launchd service if needed.\n\n"
+	if _, err := file.Write(append([]byte(header), contents...)); err != nil {
+		file.Close()
+		return fmt.Errorf("write default config: %w", err)
+	}
+	return file.Close()
+}
+
 func LoadFrom(path string) (Config, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
