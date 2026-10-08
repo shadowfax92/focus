@@ -12,6 +12,7 @@
 
 - **Always-visible priority** — a subtle, directly draggable HUD follows you across Spaces
 - **Full-screen check-ins** — the reminder you can't not notice, on your `interval`
+- **Gentle glow reminders** — passive rung-0 pulses every `pulse_interval` (default 5m) between check-ins
 - **One-keystroke answers** — `⏎` still on it, `D` drifted, `N` change focus, `F` done (and type what's next right there)
 - **Idle-aware** — an empty desk never gets a check-in; returning does
 - **Honest local stats** — day-over-day and week-over-week distraction charts from append-only JSONL; routine check-ins never count as distractions
@@ -84,7 +85,7 @@ Every `interval` the screen blurs over and shows your focus, a quote, and four k
 | `N` | Change the focus (edit it inline) |
 | `F` | Done — logs completion, then type the next focus right there (`⏎` starts it; `⏎` on an empty field means nothing next and the screen stays quiet until the next `focus set`; `⎋` backs out) |
 
-The ambient pill remains visible between check-ins. While a check-in is up, further intervals are absorbed — there is never a second screen stacked on the first. Routine check-ins are *not* distractions; only `D` moves the metric. Fewer is better, so negative changes render green.
+The ambient pill remains visible between check-ins and gently glows every `pulse_interval` for `pulse_seconds`. These nudges need no answer and never escalate. Clicking a glowing pill still acknowledges it (left-click on task, ⌥-click drifted) without delaying the next check-in. A check-in wins whenever both timers are due, and no glow fires while the screen is up. Further check-in intervals are absorbed — there is never a second screen stacked on the first. Routine check-ins and ignored glows are *not* distractions; only drifted answers move the metric. Fewer is better, so negative changes render green.
 
 ### Pulse style
 
@@ -97,6 +98,8 @@ The ambient pill remains visible between check-ins. While a check-in is up, furt
 ```yaml
 reminder_style: fullscreen   # fullscreen (default) | pulse
 interval: 15m                # reminder cadence (15m, 30m, …)
+pulse_interval: 5m           # fullscreen glows; 0 or >= interval disables
+pulse_seconds: 8             # glow duration in both styles
 idle_pause_minutes: 5
 idle_opacity: 0.3             # ambient pill opacity in either style
 position:
@@ -107,12 +110,11 @@ quotes:
   - The main thing is to keep the main thing the main thing.
 
 # pulse reminder style only:
-pulse_seconds: 8
 escalate_after: 2
 breathing_gate_seconds: 3    # escalation takeovers; check-ins arm when faded in
 ```
 
-`interval` uses Go-style durations. It drives direct check-ins in fullscreen style and pulse-ladder ticks in pulse style. Position presets are `top-center`, `top-right`, `top-left`, and `custom`; the visible pill is directly draggable with no modifier key, and dragging it persists a custom position. A click without movement between reminders does nothing.
+`interval` and `pulse_interval` use Go-style durations. `interval` drives direct check-ins in fullscreen style and pulse-ladder ticks in pulse style. `pulse_interval` must be nonnegative; it defaults to 5m when omitted, and `0` or a value at least as long as `interval` disables fullscreen glows. Pulse style ignores it and keeps its existing cadence. The idle guard, pause, and an empty focus suppress both reminders. Set, resume, and check-in acknowledgements restart both timers. Position presets are `top-center`, `top-right`, `top-left`, and `custom`; the visible pill is directly draggable with no modifier key, and dragging it persists a custom position. A click without movement between reminders does nothing.
 
 ## Local data
 

@@ -11,6 +11,7 @@
 
 // Implemented in hud_darwin.go (//export).
 extern void goHudAck(int kind, int rung, double latencySeconds, const char *newText);
+extern void goHudPassivePulseAck(int kind, unsigned long long reminderID, double latencySeconds);
 extern void goHudMoved(double x, double y);
 extern void goHudFormatPillTime(double elapsedSeconds, long long budgetNanos,
                               char **suffix, char **overage);
@@ -131,6 +132,9 @@ static BOOL _pulsing = NO;
 static int _rung = 0;
 static int _pulseGen = 0;
 static double _pulseShownAt = 0;
+// Daemon correlation token, distinct from _pulseGen's animation cancellation.
+// Zero selects the existing ladder callback; passive glows echo a nonzero ID.
+static unsigned long long _pulseReminderID = 0;
 // Screen y of the pill panel's top edge; text growth extends downward from it.
 static CGFloat _pillTop = -1;
 static NSTimer *_elapsedTimer = nil;
@@ -392,8 +396,13 @@ static void pillAck(int kind) {
     if (!_pulsing) return;
     double latency = (_pulsing && _pulseShownAt > 0) ? (nowSec() - _pulseShownAt) : 0;
     int rung = _rung;
+    unsigned long long reminderID = _pulseReminderID;
     endPulseNow();
-    goHudAck(kind, rung, latency, "");
+    if (reminderID != 0) {
+        goHudPassivePulseAck(kind, reminderID, latency);
+    } else {
+        goHudAck(kind, rung, latency, "");
+    }
 }
 
 // --- takeover ---------------------------------------------------------------
@@ -842,10 +851,11 @@ void hudClearFocus(void) {
     });
 }
 
-void hudPulse(int rung) {
+void hudPulse(int rung, unsigned long long reminderID) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!_pill || !_focusSet || _paused) return;
         _rung = rung < 0 ? 0 : rung;
+        _pulseReminderID = reminderID;
         _pulsing = YES;
         updateInteractivity();
         _pulseGen++;

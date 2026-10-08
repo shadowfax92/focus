@@ -6,7 +6,8 @@ void hudInit(double idleOpacity, const char *posPreset, double posX, double posY
 void hudRunApp(void);
 void hudSetFocus(const char *text, double sinceEpoch, long long budgetNanos);
 void hudClearFocus(void);
-void hudPulse(int rung);
+// reminderID correlates passive glow clicks; 0 keeps the pulse ladder path.
+void hudPulse(int rung, unsigned long long reminderID);
 void hudShowTakeover(const char *focusText, const char *quote,
                      const char *mirrorLine, int rung, double gateSeconds);
 void hudDismissTakeover(void);

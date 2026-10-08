@@ -58,10 +58,14 @@ type TakeoverContent struct {
 
 // Events are invoked from the UI thread; handlers must not block.
 type Events struct {
-	// OnAck fires for any UI ack: pill click while interactive, or takeover
-	// keys. newText is non-empty only for AckRefocus. latency is measured from
-	// when the pulse/takeover appeared. rung is the escalation rung acked.
+	// OnAck fires for pulse-ladder pill clicks and takeover keys. newText
+	// carries refocus text or the next focus after AckDone. latency is measured
+	// from presentation; rung is the escalation rung acknowledged.
 	OnAck func(kind AckKind, rung int, latency time.Duration, newText string)
+	// OnPassivePulseAck echoes the daemon's nonzero reminder ID for a glow
+	// click. Keeping it separate from takeover/ladder acks lets the daemon
+	// reject a delayed click after a newer reminder takes ownership.
+	OnPassivePulseAck func(kind AckKind, reminderID uint64, latency time.Duration)
 	// OnMoved fires after a pill drag ends, with the new window origin.
 	OnMoved func(x, y float64)
 }
@@ -86,7 +90,14 @@ func ClearFocus() {
 
 // Pulse plays the attention animation for the given escalation rung (0-based).
 func Pulse(rung int) {
-	pulseImpl(rung)
+	pulseImpl(rung, 0)
+}
+
+// PassivePulse reuses the rung-0 animation, echoing reminderID on optional
+// clicks. The daemon supplies a nonzero ID unique within this process; zero
+// is reserved for the existing pulse ladder's OnAck path.
+func PassivePulse(reminderID uint64) {
+	pulseImpl(0, reminderID)
 }
 
 // ShowTakeover presents the full-screen ack takeover.
