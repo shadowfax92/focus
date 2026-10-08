@@ -190,6 +190,8 @@ Unix socket `~/.focus.sock`, JSON request/response, one connection per command
 (`focus install` / `focus daemon`) when the daemon is down.
 `set` accepts an optional `budget` Go-style duration string; `status` returns
 the exact commitment as `budget_ns` when present.
+It also returns positive overage as `overage_ns`, computed before truncating
+elapsed to the legacy whole-second `elapsed_seconds` field.
 
 ## Architecture
 

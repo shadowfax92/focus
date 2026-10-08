@@ -449,7 +449,11 @@ func (d *Daemon) status() ipc.Status {
 	if !d.state.SetAt.IsZero() {
 		setAt := d.state.SetAt
 		status.SetAt = &setAt
-		status.ElapsedSeconds = int64(now.Sub(setAt).Seconds())
+		elapsed := now.Sub(setAt)
+		status.ElapsedSeconds = int64(elapsed.Seconds())
+		if d.state.Budget > 0 && elapsed > d.state.Budget {
+			status.Overage = elapsed - d.state.Budget
+		}
 	}
 	return status
 }

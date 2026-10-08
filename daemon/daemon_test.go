@@ -161,6 +161,19 @@ func TestIPCRejectsInvalidBudgetWithoutChangingFocus(t *testing.T) {
 	}
 }
 
+func TestFractionalBudgetReportsOverageBeforeOneSecond(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	d := testDaemon(t, &now, config.StyleFullscreen)
+	if response := d.Handle(ipc.Request{Action: "set", Text: "Quick task", Budget: "500ms"}); !response.OK {
+		t.Fatal(response.Error)
+	}
+	now = now.Add(750 * time.Millisecond)
+	status := d.Handle(ipc.Request{Action: "status"}).Status
+	if status.ElapsedSeconds != 0 || status.Overage != 250*time.Millisecond {
+		t.Fatalf("status = %+v, want legacy zero elapsed seconds and 250ms overage", status)
+	}
+}
+
 func recordPresentedPause(d *Daemon) *[]bool {
 	states := []bool{}
 	d.setPausedHUD = func(paused bool) {

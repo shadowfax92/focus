@@ -31,7 +31,10 @@ type Status struct {
 	ElapsedSeconds int64      `json:"elapsed_seconds,omitempty"`
 	// Budget uses nanoseconds to preserve any positive Go duration exactly;
 	// absence/zero means this focus has no time budget.
-	Budget      time.Duration `json:"budget_ns,omitempty"`
+	Budget time.Duration `json:"budget_ns,omitempty"`
+	// Overage is computed from the precise clock, rather than the legacy
+	// whole-second elapsed field, so fractional budgets report crossing too.
+	Overage     time.Duration `json:"overage_ns,omitempty"`
 	Rung        int           `json:"rung"`
 	Paused      bool          `json:"paused"`
 	PausedUntil *time.Time    `json:"paused_until,omitempty"`
