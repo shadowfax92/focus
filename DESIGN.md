@@ -1,9 +1,9 @@
 # focus — design
 
-One ambient focus pill keeps the main thing visible; every `interval` a
-full-screen check-in asks whether you're still on it — with honest
-day-over-day distraction stats. The v1 pulse escalation ladder survives as an
-opt-in cadence.
+One ambient focus pill keeps the main thing visible, gently glowing between
+check-ins; every `interval` a full-screen check-in asks whether you're still
+on it — with honest day-over-day distraction stats. The v1 pulse escalation
+ladder survives as an opt-in cadence.
 
 Deliberately **separate from mac-notify** (that stays a pure notification queue).
 This tool is a persistent, stateful HUD with its own daemon, socket, and app bundle.
@@ -11,7 +11,11 @@ This tool is a persistent, stateful HUD with its own daemon, socket, and app bun
 ## Reminder styles — `reminder_style`
 
 - **`fullscreen` (default).** The ambient pill stays visible at
-  `idle_opacity`. Every `interval` (15m/30m — user's call) the full-screen
+  `idle_opacity`. Every `pulse_interval` (default 5m), it plays the existing
+  rung-0 glow for `pulse_seconds` as a passive nudge: no rung growth,
+  escalation, or required ack. Clicking a glowing pill can still ack it
+  (left-click on_task, ⌥-click drifted), without moving either reminder timer.
+  Every `interval` (15m/30m — user's call) the full-screen
   check-in appears directly: no pulse rungs, no `escalate_after` gating. While
   one is up, further ticks are absorbed (never a second screen, never rung
   growth — an idle stretch spent staring at one doesn't re-fire it either).
@@ -20,7 +24,13 @@ This tool is a persistent, stateful HUD with its own daemon, socket, and app bun
   applies to pulse-mode escalations only. The keys still arm only once the 2s
   fade-in completes, so in-flight typing can never ack a screen that isn't
   visible yet. Setting a focus does **not** fire an instant screen; the first
-  check-in comes a full interval later.
+  glow comes a full `pulse_interval` later, and the first check-in comes a
+  full `interval` later. A due check-in always wins over a due glow; no glows
+  fire while a check-in is up. Any lingering glow ends when the screen opens.
+  Set, resume, and check-in acknowledgements restart both schedules; optional
+  glow acknowledgements leave them alone. The idle guard and pause/no-focus
+  guards suppress both. `pulse_interval: 0` disables these nudges, as does a
+  `pulse_interval` greater than or equal to `interval`.
 - **`pulse`.** The v1 cadence, unchanged: the same ambient pill shows glow
   pulses climbing rungs each unacked tick, with a takeover after
   `escalate_after` ignored pulses.
@@ -163,7 +173,8 @@ focus daemon                         # run daemon in foreground (dev)
 ```yaml
 reminder_style: fullscreen   # fullscreen | pulse
 interval: 15m
-pulse_seconds: 8             # pulse style only
+pulse_interval: 5m           # fullscreen nudges; 0 or >= interval disables
+pulse_seconds: 8             # rung-0 glow duration in both styles
 escalate_after: 2            # pulse style only
 breathing_gate_seconds: 3    # pulse-style escalations; check-ins arm on fade-in
 idle_opacity: 0.30           # ambient pill in both styles; 0 is honored
@@ -175,6 +186,10 @@ position:
 quotes:
   - "The main thing is to keep the main thing the main thing."
 ```
+
+`interval` and `pulse_interval` use Go-style durations. `pulse_interval` must
+be nonnegative and is ignored by `reminder_style: pulse`. Existing configs
+that omit it inherit the 5m default; `focus config` prints the resolved value.
 
 Runtime state (survives daemon restart): `~/.local/state/focus/current.json` —
 current focus text, set-at timestamp, optional budget (`budget_ns`, exact
@@ -216,7 +231,12 @@ Makefile, plist    build, Focus.app (LSUIElement), launchd
 ```
 
 - The daemon drives pill focus state in both reminder styles. In fullscreen
-  style it skips `Pulse` and sends each due interval directly to the takeover.
+  style it owns separate glow and check-in deadlines, checking the latter
+  first. Passive glows call the existing `Pulse(0)` rendering without entering
+  the escalation state machine. Their optional ack window is ephemeral and
+  ends with the glow, pause, focus change, or check-in; it is never restored
+  as a pending reminder after daemon restart. Check-ins keep their existing
+  interval and acknowledgement behavior.
 - `daemon` runs policy in goroutines and calls `hud.Run` **last, on the main
   goroutine** (main.go already locks it to the OS thread).
 - go.mod is pinned (cobra, yaml.v3, fatih/color); no new deps.

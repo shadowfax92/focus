@@ -17,19 +17,24 @@ import (
 
 // Daemon owns persisted focus state and reminder policy. Its mutex serializes
 // IPC, scheduler, and HUD input before presentation is queued to Cocoa.
+// Reminder deadlines and passive glows belong to this process, not persisted state.
 type Daemon struct {
-	mu           sync.Mutex
-	cfg          config.Config
-	events       *store.Store
-	statePath    string
-	state        State
-	machine      *Machine
-	now          func() time.Time
-	idle         func() float64
-	nextTick     time.Time
-	idleGuarded  bool
-	setFocusHUD  func(string, time.Time, time.Duration)
-	setPausedHUD func(bool)
+	mu        sync.Mutex
+	cfg       config.Config
+	events    *store.Store
+	statePath string
+	state     State
+	machine   *Machine
+	now       func() time.Time
+	idle      func() float64
+	nextTick  time.Time
+	nextPulse time.Time
+	// Passive glows accept optional clicks only while visible. This timestamp
+	// is ephemeral: a daemon restart must not restore a glow as a pending ack.
+	passivePulseAt time.Time
+	idleGuarded    bool
+	setFocusHUD    func(string, time.Time, time.Duration)
+	setPausedHUD   func(bool)
 }
 
 func New(cfg config.Config) (*Daemon, error) {
@@ -49,7 +54,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		now:       time.Now,
 		idle:      idleSeconds,
 	}
-	d.nextTick = d.now().Add(cfg.Interval)
+	d.resetScheduleLocked(d.now())
 	return d, nil
 }
 
@@ -102,6 +107,18 @@ func (d *Daemon) hudConfig() hud.Config {
 // full-screen check-in instead of climbing the pulse escalation ladder.
 // Ambient pill presentation is independent of this cadence choice.
 func (d *Daemon) directCheckins() bool { return d.cfg.ReminderStyle != config.StylePulse }
+
+// resetScheduleLocked starts a fresh reminder window after set, resume, or a
+// check-in. The passive glow has its own deadline so it cannot delay check-ins
+// or feed the pulse-style escalation machine. Zero means no passive cadence.
+func (d *Daemon) resetScheduleLocked(now time.Time) {
+	d.nextTick = now.Add(d.cfg.Interval)
+	d.nextPulse = time.Time{}
+	d.passivePulseAt = time.Time{}
+	if d.directCheckins() && d.cfg.PulseInterval > 0 && d.cfg.PulseInterval < d.cfg.Interval {
+		d.nextPulse = now.Add(d.cfg.PulseInterval)
+	}
+}
 
 // presentFocus sends the complete focus to the HUD, including its original
 // clock origin and budget on restore/resume. Tests replace this output seam
@@ -205,16 +222,25 @@ func (d *Daemon) poll() error {
 			}
 			d.machine.Reset()
 			action := d.reminderLocked(now)
-			d.nextTick = now.Add(d.cfg.Interval)
+			d.resetScheduleLocked(now)
 			return d.performLocked(action, now)
 		}
 	}
-	if now.Before(d.nextTick) {
-		return nil
+	// Check-ins win even if both deadlines became due between polls. Resetting
+	// both deadlines also discards the coincident glow instead of replaying it.
+	if !now.Before(d.nextTick) {
+		action := d.tickLocked(now)
+		d.resetScheduleLocked(now)
+		return d.performLocked(action, now)
 	}
-	action := d.tickLocked(now)
-	d.nextTick = now.Add(d.cfg.Interval)
-	return d.performLocked(action, now)
+	if !d.nextPulse.IsZero() && !now.Before(d.nextPulse) {
+		d.nextPulse = now.Add(d.cfg.PulseInterval)
+		if !d.machine.State().InTakeover {
+			// Passive rung-0 nudges never enter the acknowledgement ladder.
+			return d.performLocked(Action{Kind: ActionPulse}, now)
+		}
+	}
+	return nil
 }
 
 func (d *Daemon) Handle(request ipc.Request) ipc.Response {
@@ -279,7 +305,7 @@ func (d *Daemon) set(text string, budget time.Duration) error {
 	d.state.Budget = budget
 	d.machine.Reset()
 	d.idleGuarded = false
-	d.nextTick = now.Add(d.cfg.Interval)
+	d.resetScheduleLocked(now)
 	if err := d.appendLocked(store.Event{TS: now, Type: "set", Text: text}); err != nil {
 		return err
 	}
@@ -319,6 +345,7 @@ func (d *Daemon) clearFocusLocked() error {
 	d.state.Budget = 0
 	d.state.PausedUntil = nil
 	d.machine.Reset()
+	d.passivePulseAt = time.Time{}
 	hud.DismissTakeover()
 	hud.ClearFocus()
 	d.presentPaused(false)
@@ -331,6 +358,7 @@ func (d *Daemon) pause(duration time.Duration) error {
 	now := d.now()
 	until := now.Add(duration)
 	d.state.PausedUntil = &until
+	d.passivePulseAt = time.Time{}
 	if err := d.appendLocked(store.Event{TS: now, Type: "pause"}); err != nil {
 		return err
 	}
@@ -350,7 +378,7 @@ func (d *Daemon) resumeLocked(now time.Time) error {
 		return nil
 	}
 	d.state.PausedUntil = nil
-	d.nextTick = now.Add(d.cfg.Interval)
+	d.resetScheduleLocked(now)
 	if err := d.appendLocked(store.Event{TS: now, Type: "resume"}); err != nil {
 		return err
 	}
@@ -385,11 +413,16 @@ func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung 
 	if d.state.FocusText == "" {
 		return fmt.Errorf("nothing is currently focused")
 	}
+	now := d.now()
 	previous := d.machine.State()
-	if !previous.AwaitingAck {
+	passive := !previous.AwaitingAck && d.directCheckins() && !d.passivePulseAt.IsZero() &&
+		now.Before(d.passivePulseAt.Add(d.passivePulseDuration()))
+	if !previous.AwaitingAck && !passive {
 		return fmt.Errorf("no reminder is awaiting acknowledgement")
 	}
-	now := d.now()
+	if passive {
+		previous.ReminderAt = d.passivePulseAt
+	}
 	rung := previous.Rung
 	if reportedRung != nil {
 		rung = *reportedRung
@@ -410,7 +443,12 @@ func (d *Daemon) ack(kind, newText string, latency *time.Duration, reportedRung 
 		return err
 	}
 	d.machine.Ack()
-	d.nextTick = now.Add(d.cfg.Interval)
+	// Optional glow clicks log the response without postponing either timer.
+	// Completing/changing the focus still starts a fresh reminder window.
+	if !passive || kind == "refocus" || kind == "done" {
+		d.resetScheduleLocked(now)
+	}
+	d.passivePulseAt = time.Time{}
 	hud.DismissTakeover()
 	newText = strings.TrimSpace(newText)
 	if kind == "done" {
@@ -466,6 +504,9 @@ func (d *Daemon) performLocked(action Action, now time.Time) error {
 		if err := d.appendLocked(store.Event{TS: now, Type: "pulse", Rung: store.Rung(action.Rung)}); err != nil {
 			return err
 		}
+		if d.directCheckins() {
+			d.passivePulseAt = now
+		}
 		hud.Pulse(action.Rung)
 	case ActionTakeover:
 		if err := d.appendLocked(store.Event{TS: now, Type: "escalation", Rung: store.Rung(action.Rung)}); err != nil {
@@ -476,9 +517,24 @@ func (d *Daemon) performLocked(action Action, now time.Time) error {
 		if err := d.appendLocked(store.Event{TS: now, Type: "checkin"}); err != nil {
 			return err
 		}
+		d.passivePulseAt = time.Time{}
+		// Dismiss also ends any lingering glow on the UI thread. Queue it
+		// before ShowTakeover so long pulse_seconds never overlaps a check-in.
+		hud.DismissTakeover()
 		hud.ShowTakeover(d.takeoverContentLocked(now))
 	}
 	return d.saveLocked()
+}
+
+// passivePulseDuration matches the existing HUD's rung-0 lifetime, including
+// its 8s fallback for pulse_seconds: 0. It bounds optional CLI/pill acks without
+// making an ignored nudge part of the persisted escalation machine.
+func (d *Daemon) passivePulseDuration() time.Duration {
+	seconds := d.cfg.PulseSeconds
+	if seconds <= 0 {
+		seconds = 8
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // takeoverContentLocked builds the screen for whichever reminder the current

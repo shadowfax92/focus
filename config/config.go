@@ -23,9 +23,12 @@ type Position struct {
 	Y      float64 `yaml:"y" json:"y"`
 }
 
+// Config is the resolved reminder and presentation policy shared by the CLI
+// and daemon. Durations are stored as readable strings in the YAML file.
 type Config struct {
 	ReminderStyle        string        `yaml:"reminder_style" json:"reminder_style"`
 	Interval             time.Duration `yaml:"interval" json:"interval"`
+	PulseInterval        time.Duration `yaml:"pulse_interval" json:"pulse_interval"` // Fullscreen nudges; 0 disables.
 	PulseSeconds         int           `yaml:"pulse_seconds" json:"pulse_seconds"`
 	EscalateAfter        int           `yaml:"escalate_after" json:"escalate_after"`
 	BreathingGateSeconds int           `yaml:"breathing_gate_seconds" json:"breathing_gate_seconds"`
@@ -38,6 +41,7 @@ type Config struct {
 type diskConfig struct {
 	ReminderStyle        string   `yaml:"reminder_style"`
 	Interval             string   `yaml:"interval"`
+	PulseInterval        string   `yaml:"pulse_interval"`
 	PulseSeconds         int      `yaml:"pulse_seconds"`
 	EscalateAfter        int      `yaml:"escalate_after"`
 	BreathingGateSeconds int      `yaml:"breathing_gate_seconds"`
@@ -51,6 +55,7 @@ func Default() Config {
 	return Config{
 		ReminderStyle:        StyleFullscreen,
 		Interval:             15 * time.Minute,
+		PulseInterval:        5 * time.Minute,
 		PulseSeconds:         8,
 		EscalateAfter:        2,
 		BreathingGateSeconds: 3,
@@ -129,6 +134,9 @@ func (c Config) Validate() error {
 	if c.Interval <= 0 {
 		return fmt.Errorf("interval must be positive")
 	}
+	if c.PulseInterval < 0 {
+		return fmt.Errorf("pulse_interval must not be negative")
+	}
 	if c.PulseSeconds < 0 {
 		return fmt.Errorf("pulse_seconds must not be negative")
 	}
@@ -156,6 +164,7 @@ func toDisk(c Config) diskConfig {
 	return diskConfig{
 		ReminderStyle:        c.ReminderStyle,
 		Interval:             c.Interval.String(),
+		PulseInterval:        c.PulseInterval.String(),
 		PulseSeconds:         c.PulseSeconds,
 		EscalateAfter:        c.EscalateAfter,
 		BreathingGateSeconds: c.BreathingGateSeconds,
@@ -171,9 +180,14 @@ func fromDisk(d diskConfig) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("parse interval: %w", err)
 	}
+	pulseInterval, err := time.ParseDuration(d.PulseInterval)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse pulse_interval: %w", err)
+	}
 	return Config{
 		ReminderStyle:        d.ReminderStyle,
 		Interval:             interval,
+		PulseInterval:        pulseInterval,
 		PulseSeconds:         d.PulseSeconds,
 		EscalateAfter:        d.EscalateAfter,
 		BreathingGateSeconds: d.BreathingGateSeconds,
